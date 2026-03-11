@@ -103,7 +103,10 @@ export default function (pi: ExtensionAPI) {
 
 	function loadExperts(cwd: string) {
 		// Pi Pi experts live in their own dedicated directory
-		const piPiDir = join(cwd, ".pi", "agents", "pi-pi");
+		// Check local project first, fall back to global ~/.pi/agent/agents/pi-pi
+		const localDir = join(cwd, ".pi", "agents", "pi-pi");
+		const globalDir = join(process.env.HOME || "", ".pi", "agent", "agents", "pi-pi");
+		const piPiDir = existsSync(localDir) ? localDir : globalDir;
 
 		experts.clear();
 
@@ -561,7 +564,9 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 
 		const expertNames = Array.from(experts.values()).map(s => displayName(s.def.name)).join(", ");
 
-		const orchestratorPath = join(_ctx.cwd, ".pi", "agents", "pi-pi", "pi-orchestrator.md");
+		const localOrch = join(_ctx.cwd, ".pi", "agents", "pi-pi", "pi-orchestrator.md");
+		const globalOrch = join(process.env.HOME || "", ".pi", "agent", "agents", "pi-pi", "pi-orchestrator.md");
+		const orchestratorPath = existsSync(localOrch) ? localOrch : globalOrch;
 		let systemPrompt = "";
 		try {
 			const raw = readFileSync(orchestratorPath, "utf-8");
