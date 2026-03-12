@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pi-Shell launcher — reads orchestrator model from config and passes to pi
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="$SCRIPT_DIR/.pi/shell-config.yaml"
+
+# Extract orchestrator model from yaml config (simple grep, no deps)
+MODEL=""
+if [ -f "$CONFIG" ]; then
+    MODEL=$(grep -A5 '^orchestrator:' "$CONFIG" | grep 'model:' | head -1 | sed 's/.*model: *//' | tr -d '[:space:]')
+fi
+
+# Build pi command
+ARGS=(-ne -ns -np --no-themes -e "$SCRIPT_DIR/extensions/pi-shell.ts")
+
+if [ -n "$MODEL" ]; then
+    ARGS+=(--model "$MODEL")
+fi
+
+# Pass through any extra args
+exec pi "${ARGS[@]}" "$@"

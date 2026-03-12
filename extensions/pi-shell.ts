@@ -1609,9 +1609,14 @@ function setupCompaction(pi: ExtensionAPI, _taskStore: TaskStore): void {
 
 // ── Extension Entry Point ──────────────────────────────────────────────
 
+// Resolve the project root from the extension file location
+// so config is found regardless of cwd
+const PI_SHELL_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+
 export default function piShell(pi: ExtensionAPI) {
 	// --- Config ---
-	const config = loadShellConfig();
+	// Try project root first (where the extension lives), then cwd
+	const config = loadShellConfig(PI_SHELL_ROOT);
 
 	// --- State ---
 	const taskStore = createPersistentTaskStore();
