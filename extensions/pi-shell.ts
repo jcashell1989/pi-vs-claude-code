@@ -13,9 +13,11 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Type } from "@sinclair/typebox";
 import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { StringEnum } from "@mariozechner/pi-ai";
+import * as path from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
 import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
+import { spawnSubagent } from "./pi-shell/spawn.ts";
 
 // ── Type Definitions ───────────────────────────────────────────────────
 
@@ -98,11 +100,8 @@ function createAgentTracker(): AgentTracker {
 // ── Tool Registration Stubs ────────────────────────────────────────────
 
 /** Register the tilldone tool with persistent TaskStore and blocking gate */
-function registerTillDone(pi: ExtensionAPI, _taskStore: TaskStore): void {
-	// Will implement: tilldone tool (new-list, add, toggle, remove, update, list, clear)
-	// with blocking gate that whitelists utility tools (answer, git_status, switch_key, kill_agent)
-	// Adapted from tilldone.ts but using persistent TaskStore instead of session reconstruction
-
+function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
+	const STATUS_ICON: Record<TaskStatus, string> = { idle: "○", inprogress: "●", done: "✓" };
 	const GATE_WHITELIST = ["tilldone", "answer", "git_status", "switch_key", "kill_agent"];
 
 	pi.registerTool({
@@ -110,24 +109,154 @@ function registerTillDone(pi: ExtensionAPI, _taskStore: TaskStore): void {
 		label: "TillDone",
 		description:
 			"Manage your task list. You MUST add tasks before using any other tools. " +
-			"Actions: new-list (text=title), add (text), toggle (id), remove (id), update (id + text), list, clear.",
+			"Actions: new-list (text=title), add (text or texts[] for batch), toggle (id) — cycles idle→inprogress→done, " +
+			"remove (id), update (id + text), list, clear.",
 		parameters: Type.Object({
 			action: StringEnum(["new-list", "add", "toggle", "remove", "update", "list", "clear"] as const),
 			text: Type.Optional(Type.String({ description: "Task text (for add/update) or list title (for new-list)" })),
+			texts: Type.Optional(Type.Array(Type.String(), { description: "Multiple task texts (for add). Use this to batch-add several tasks at once." })),
 			id: Type.Optional(Type.Number({ description: "Task ID (for toggle/remove/update)" })),
 		}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will implement all tilldone actions using _taskStore
-			return {
-				content: [{ type: "text" as const, text: "tilldone stub — not yet implemented" }],
-			};
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			switch (params.action) {
+				case "new-list": {
+					if (!params.text) {
+						return {
+							content: [{ type: "text" as const, text: "Error: text (title) required for new-list" }],
+						};
+					}
+					taskStore.newList(params.text);
+					return {
+						content: [{ type: "text" as const, text: `New list created: "${params.text}"` }],
+					};
+				}
+
+				case "add": {
+					// Support batch via texts param, or single via text param
+					const items = params.texts?.length ? params.texts : params.text ? [params.text] : [];
+					if (items.length === 0) {
+						return {
+							content: [{ type: "text" as const, text: "Error: text or texts required for add" }],
+						};
+					}
+
+					if (items.length === 1) {
+						const task = taskStore.add(items[0]);
+						return {
+							content: [{ type: "text" as const, text: `Added task #${task.id} (${task.status}): ${task.text}` }],
+						};
+					}
+
+					const added = taskStore.addBatch(items);
+					const ids = added.map((t) => `#${t.id}`).join(", ");
+					return {
+						content: [{ type: "text" as const, text: `Added ${added.length} tasks: ${ids}` }],
+					};
+				}
+
+				case "toggle": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text" as const, text: "Error: id required for toggle" }],
+						};
+					}
+					try {
+						const task = taskStore.toggle(params.id);
+						return {
+							content: [{ type: "text" as const, text: `Task #${task.id}: now ${task.status} — ${task.text}` }],
+						};
+					} catch (err: any) {
+						return {
+							content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+						};
+					}
+				}
+
+				case "remove": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text" as const, text: "Error: id required for remove" }],
+						};
+					}
+					try {
+						const task = taskStore.getById(params.id);
+						taskStore.remove(params.id);
+						return {
+							content: [{ type: "text" as const, text: `Removed task #${params.id}${task ? `: ${task.text}` : ""}` }],
+						};
+					} catch (err: any) {
+						return {
+							content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+						};
+					}
+				}
+
+				case "update": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text" as const, text: "Error: id required for update" }],
+						};
+					}
+					if (!params.text) {
+						return {
+							content: [{ type: "text" as const, text: "Error: text required for update" }],
+						};
+					}
+					try {
+						const oldTask = taskStore.getById(params.id);
+						const oldText = oldTask?.text ?? "?";
+						taskStore.update(params.id, params.text);
+						return {
+							content: [{ type: "text" as const, text: `Updated #${params.id}: "${oldText}" → "${params.text}"` }],
+						};
+					} catch (err: any) {
+						return {
+							content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+						};
+					}
+				}
+
+				case "list": {
+					const tasks = taskStore.getAll();
+					const title = taskStore.getTitle();
+					if (tasks.length === 0) {
+						return {
+							content: [{ type: "text" as const, text: "No tasks defined yet." }],
+						};
+					}
+					const header = title ? `${title}:` : "Tasks:";
+					const lines = tasks.map((t) =>
+						`[${STATUS_ICON[t.status]}] #${t.id} (${t.status}): ${t.text}`
+					);
+					return {
+						content: [{ type: "text" as const, text: `${header}\n${lines.join("\n")}` }],
+					};
+				}
+
+				case "clear": {
+					const count = taskStore.getAll().length;
+					taskStore.clear();
+					return {
+						content: [{ type: "text" as const, text: `Cleared ${count} task(s)` }],
+					};
+				}
+
+				default:
+					return {
+						content: [{ type: "text" as const, text: `Unknown action: ${params.action}` }],
+					};
+			}
 		},
+
 		renderCall(args, theme) {
-			return new Text(
-				theme.fg("toolTitle", theme.bold("tilldone ")) + theme.fg("muted", (args as any).action || ""),
-				0, 0,
-			);
+			const a = args as any;
+			let text = theme.fg("toolTitle", theme.bold("tilldone ")) + theme.fg("muted", a.action || "");
+			if (a.texts?.length) text += ` ${theme.fg("dim", `${a.texts.length} tasks`)}`;
+			else if (a.text) text += ` ${theme.fg("dim", `"${a.text}"`)}`;
+			if (a.id !== undefined) text += ` ${theme.fg("accent", `#${a.id}`)}`;
+			return new Text(text, 0, 0);
 		},
+
 		renderResult(result, _options, _theme) {
 			const text = result.content[0];
 			return new Text(text?.type === "text" ? text.text : "", 0, 0);
@@ -138,14 +267,14 @@ function registerTillDone(pi: ExtensionAPI, _taskStore: TaskStore): void {
 	pi.on("tool_call", async (event, _ctx) => {
 		if (GATE_WHITELIST.includes(event.toolName)) return { block: false };
 
-		const tasks = _taskStore.getAll();
-		const active = _taskStore.getActive();
+		const tasks = taskStore.getAll();
+		const active = taskStore.getActive();
 
 		if (tasks.length === 0) {
 			return { block: true, reason: "No tasks defined. Use `tilldone add` first." };
 		}
 		if (!active) {
-			return { block: true, reason: "No task in progress. Use `tilldone toggle` to activate a task." };
+			return { block: true, reason: "No task in progress. Use `tilldone toggle <id>` to activate a task." };
 		}
 		return { block: false };
 	});
@@ -158,10 +287,8 @@ function registerDispatch(
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 ): void {
-	// Will implement: spawn pi subprocess with --mode json, parse JSONL events,
-	// track agent status, extract costs from message_end events, truncate results
-	// Agent definitions loaded from .pi/agents/*.md
-	// Session persisted to .pi/tasks/sessions/<agent>-<task-id>.jsonl
+	const cwd = process.cwd();
+	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
 
 	pi.registerTool({
 		name: "dispatch_agent",
@@ -172,11 +299,115 @@ function registerDispatch(
 			task: Type.String({ description: "Clear, specific task description for the agent" }),
 			branch: Type.Optional(Type.String({ description: "Target git branch for code changes" })),
 		}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will spawn subagent process, stream JSONL, track via agentTracker
-			return {
-				content: [{ type: "text" as const, text: "dispatch_agent stub — not yet implemented" }],
-			};
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			const { agent, task, branch } = params as { agent: string; task: string; branch?: string };
+
+			// Resolve the active task to attach cost to
+			const activeTask = _taskStore.getActive();
+			const taskId = activeTask?.id ?? 0;
+
+			// Resolve model from config
+			const model = _config.agent_models[agent.toLowerCase()];
+
+			// Resolve timeout from config (default 600s)
+			const timeout = _config.agent_timeouts[agent.toLowerCase()] ?? 600;
+
+			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
+
+			// Determine branch: use explicit branch param, or auto-generate if git.auto_branch is enabled
+			let targetBranch = branch;
+			if (!targetBranch && _config.git.auto_branch && activeTask) {
+				const slug = activeTask.text
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-|-$/g, "")
+					.slice(0, 40);
+				targetBranch = `${_config.git.branch_prefix}${activeTask.id}-${slug}`;
+				_taskStore.setBranch(activeTask.id, targetBranch);
+			}
+
+			// Track agent start — use pid 0 as placeholder (updated below isn't possible
+			// since spawnSubagent encapsulates the process, but we track lifecycle)
+			const agentState = _agentTracker.start(agent, task, taskId, 0);
+
+			// Set up elapsed timer
+			const startTime = Date.now();
+			const elapsedTimer = setInterval(() => {
+				_agentTracker.update(agent, { elapsed: Date.now() - startTime });
+			}, 1000);
+
+			// Send initial streaming update
+			if (onUpdate) {
+				onUpdate({
+					content: [{ type: "text", text: `Dispatching ${agent}...` }],
+					details: { agent, task, status: "dispatching" },
+				});
+			}
+
+			try {
+				const result = await spawnSubagent({
+					agent,
+					task,
+					model,
+					branch: targetBranch,
+					cwd,
+					timeout,
+					maxResultTokens,
+					sessionDir,
+					taskId,
+					signal,
+					onUpdate: (data) => {
+						// Update agent tracker with latest work
+						if (data.type === "text_delta") {
+							_agentTracker.update(agent, { lastWork: data.content });
+						}
+						// Stream progress to orchestrator
+						if (onUpdate) {
+							onUpdate({
+								content: [{ type: "text", text: data.content }],
+								details: { agent, task, status: "running", type: data.type },
+							});
+						}
+					},
+					onCostUpdate: (cost) => {
+						_agentTracker.update(agent, { cost });
+						// Add cost to the active task
+						if (activeTask) {
+							_taskStore.addCost(activeTask.id, cost - (agentState.cost || 0));
+						}
+					},
+				});
+
+				clearInterval(elapsedTimer);
+
+				const status = result.exitCode === 0 ? "done" : "error";
+				_agentTracker.update(agent, { elapsed: result.elapsed, cost: result.cost });
+				_agentTracker.finish(agent, status);
+
+				const summary = `[${agent}] ${status} in ${Math.round(result.elapsed / 1000)}s` +
+					(result.cost > 0 ? ` ($${result.cost.toFixed(3)})` : "");
+
+				return {
+					content: [{ type: "text" as const, text: `${summary}\n\n${result.output}` }],
+					details: {
+						agent,
+						task,
+						status,
+						elapsed: result.elapsed,
+						exitCode: result.exitCode,
+						cost: result.cost,
+						branch: targetBranch,
+					},
+				};
+			} catch (err: any) {
+				clearInterval(elapsedTimer);
+				_agentTracker.finish(agent, "error");
+
+				return {
+					content: [{ type: "text" as const, text: `Error dispatching to ${agent}: ${err?.message || err}` }],
+					details: { agent, task, status: "error", elapsed: 0, exitCode: 1, cost: 0 },
+				};
+			}
 		},
 		renderCall(args, theme) {
 			const a = args as any;
@@ -188,9 +419,38 @@ function registerDispatch(
 				0, 0,
 			);
 		},
-		renderResult(result, _options, _theme) {
-			const text = result.content[0];
-			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+		renderResult(result, options, theme) {
+			const details = result.details as any;
+			if (!details) {
+				const text = result.content[0];
+				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+			}
+
+			// Streaming/partial result while agent is still running
+			if (options.isPartial || details.status === "dispatching") {
+				return new Text(
+					theme.fg("accent", `● ${details.agent || "?"}`) +
+					theme.fg("dim", " working..."),
+					0, 0,
+				);
+			}
+
+			const icon = details.status === "done" ? "✓" : "✗";
+			const color = details.status === "done" ? "success" : "error";
+			const elapsed = typeof details.elapsed === "number" ? Math.round(details.elapsed / 1000) : 0;
+			const costStr = details.cost > 0 ? ` $${details.cost.toFixed(3)}` : "";
+			const header = theme.fg(color, `${icon} ${details.agent}`) +
+				theme.fg("dim", ` ${elapsed}s${costStr}`);
+
+			if (options.expanded && result.content[0]?.type === "text") {
+				const output = result.content[0].text;
+				const truncated = output.length > 4000
+					? output.slice(0, 4000) + "\n... [truncated in view]"
+					: output;
+				return new Text(header + "\n" + theme.fg("muted", truncated), 0, 0);
+			}
+
+			return new Text(header, 0, 0);
 		},
 	});
 }
@@ -202,9 +462,8 @@ function registerAnswer(
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 ): void {
-	// Will implement: self-contained lifecycle that creates task, spawns read-only
-	// subagent (scout profile), streams result, marks task done — all in one tool call
-	// Bypasses TillDone gate (whitelisted)
+	const cwd = process.cwd();
+	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
 
 	pi.registerTool({
 		name: "answer",
@@ -213,11 +472,63 @@ function registerAnswer(
 		parameters: Type.Object({
 			question: Type.String({ description: "The question to answer" }),
 		}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will create task, spawn scout subagent, stream answer, mark done
-			return {
-				content: [{ type: "text" as const, text: "answer stub — not yet implemented" }],
-			};
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			const { question } = params as { question: string };
+
+			// 1. Create task and toggle to in-progress
+			const task = _taskStore.add(question);
+			_taskStore.toggle(task.id); // idle -> inprogress
+
+			const model = _config.agent_models.answer || _config.agent_models.scout;
+			const timeout = _config.agent_timeouts.answer ?? 120;
+			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
+
+			try {
+				// 2. Spawn read-only scout subagent
+				const result = await spawnSubagent({
+					agent: "scout",
+					task: `Answer the following question about the codebase: ${question}`,
+					model,
+					cwd,
+					timeout,
+					maxResultTokens,
+					sessionDir,
+					taskId: task.id,
+					signal,
+					onUpdate: (data) => {
+						if (onUpdate) {
+							onUpdate({
+								content: [{ type: "text" as const, text: data.content }],
+							});
+						}
+					},
+					onCostUpdate: (cost) => {
+						_agentTracker.update("scout", { cost });
+					},
+				});
+
+				// 3. Mark task done and record cost
+				_taskStore.toggle(task.id); // inprogress -> done
+				if (result.cost > 0) {
+					_taskStore.addCost(task.id, result.cost);
+				}
+
+				return {
+					content: [{ type: "text" as const, text: result.output || "(no answer returned)" }],
+				};
+			} catch (err: unknown) {
+				// On failure, still mark task as done so it doesn't block
+				try {
+					_taskStore.toggle(task.id); // inprogress -> done
+				} catch {
+					// Task may already be in unexpected state — ignore
+				}
+
+				const message = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text" as const, text: `Error answering question: ${message}` }],
+				};
+			}
 		},
 		renderCall(args, theme) {
 			const q = (args as any).question || "?";
