@@ -4,8 +4,8 @@ orchestrator:
   compaction_summary: true
 
 agent_models:
-  scout: openrouter/google/gemini-2.5-flash
-  planner: openrouter/google/gemini-2.5-flash
+  scout: openrouter/anthropic/claude-haiku-4.5
+  planner: openrouter/anthropic/claude-haiku-4.5
   builder: openrouter/anthropic/claude-sonnet-4
   reviewer: openrouter/anthropic/claude-sonnet-4
   red-team: openrouter/anthropic/claude-sonnet-4
