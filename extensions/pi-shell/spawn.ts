@@ -21,6 +21,7 @@ export interface SpawnOptions {
 	fallbackModel?: string;  // fallback model if primary fails (404/guardrail)
 	branch?: string;         // git branch to work on (dispatch_agent passes this)
 	cwd: string;             // working directory
+	agentDefsDir?: string;   // fallback dir for agent defs (if not found in cwd/.pi/agents/)
 	timeout: number;         // max runtime in seconds
 	maxResultTokens: number; // truncation limit for result
 	sessionDir: string;      // directory for session files (.pi/tasks/sessions/)
@@ -50,27 +51,37 @@ interface AgentDef {
 
 /**
  * Read and parse an agent definition from .pi/agents/<name>.md.
+ * Checks cwd first, then falls back to agentDefsDir (pi-orchestrator root).
  * Expects YAML frontmatter delimited by --- lines, followed by body text.
  */
-function loadAgentDef(agentName: string, cwd: string): AgentDef | null {
-	const filePath = join(cwd, ".pi", "agents", `${agentName}.md`);
-	try {
-		const raw = readFileSync(filePath, "utf-8");
-		const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-		if (!match) return null;
-
-		const frontmatter = yamlParse(match[1]) as Record<string, string>;
-		if (!frontmatter?.name) return null;
-
-		return {
-			name: frontmatter.name,
-			description: frontmatter.description || "",
-			tools: frontmatter.tools || "read,bash,grep",
-			systemPrompt: match[2].trim(),
-		};
-	} catch {
-		return null;
+function loadAgentDef(agentName: string, cwd: string, agentDefsDir?: string): AgentDef | null {
+	const candidates = [
+		join(cwd, ".pi", "agents", `${agentName}.md`),
+	];
+	if (agentDefsDir) {
+		candidates.push(join(agentDefsDir, ".pi", "agents", `${agentName}.md`));
 	}
+
+	for (const filePath of candidates) {
+		try {
+			const raw = readFileSync(filePath, "utf-8");
+			const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+			if (!match) continue;
+
+			const frontmatter = yamlParse(match[1]) as Record<string, string>;
+			if (!frontmatter?.name) continue;
+
+			return {
+				name: frontmatter.name,
+				description: frontmatter.description || "",
+				tools: frontmatter.tools || "read,bash,grep",
+				systemPrompt: match[2].trim(),
+			};
+		} catch {
+			continue;
+		}
+	}
+	return null;
 }
 
 // ── Git Branch Helpers ─────────────────────────────────────────────────
@@ -140,8 +151,8 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 		onCostUpdate,
 	} = options;
 
-	// Load agent definition
-	const agentDef = loadAgentDef(agent, cwd);
+	// Load agent definition (cwd first, then fallback to pi-orchestrator root)
+	const agentDef = loadAgentDef(agent, cwd, options.agentDefsDir);
 	if (!agentDef) {
 		return {
 			output: `Agent "${agent}" not found. No .pi/agents/${agent}.md definition.`,
@@ -263,16 +274,23 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 						textChunks.push(`[Error] ${msg.errorMessage}`);
 					}
 					// Extract cost from message_end events
-					if (msg?.usage?.cost != null) {
-						totalCost += msg.usage.cost;
+					// Pi reports usage.cost as {input, output, cacheRead, cacheWrite, total}
+					const rawCost = msg?.usage?.cost;
+					const msgCost = typeof rawCost === "number" ? rawCost
+						: (typeof rawCost === "object" && rawCost !== null) ? (Number((rawCost as any).total) || 0)
+						: 0;
+					if (msgCost > 0) {
+						totalCost += msgCost;
 						if (onCostUpdate) {
 							onCostUpdate(totalCost);
 						}
 					} else if (msg?.usage) {
-						// Some providers report input/output tokens but not cost directly
-						// Try to extract from the event's top-level cost field
-						if (event.cost != null) {
-							totalCost += event.cost;
+						// Fallback: event-level cost field
+						const evtCost = typeof event.cost === "number" ? event.cost
+							: (typeof event.cost === "object" && event.cost !== null) ? (Number((event.cost as any).total) || 0)
+							: 0;
+						if (evtCost > 0) {
+							totalCost += evtCost;
 							if (onCostUpdate) {
 								onCostUpdate(totalCost);
 							}
@@ -285,8 +303,11 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 					}
 				} else if (event.type === "agent_end") {
 					// Final event — may contain cost summary
-					if (event.cost != null && event.cost > totalCost) {
-						totalCost = event.cost;
+					const endCost = typeof event.cost === "number" ? event.cost
+						: (typeof event.cost === "object" && event.cost !== null) ? (Number((event.cost as any).total) || 0)
+						: 0;
+					if (endCost > 0 && endCost > totalCost) {
+						totalCost = endCost;
 						if (onCostUpdate) {
 							onCostUpdate(totalCost);
 						}

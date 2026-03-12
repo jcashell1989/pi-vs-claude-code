@@ -990,6 +990,7 @@ function registerFanOut(
 			}
 
 			try {
+				let lastKnownFanOutCost = 0;
 				const result = await executeFanOut({
 					agent,
 					dispatches,
@@ -1014,7 +1015,9 @@ function registerFanOut(
 					},
 					onCostUpdate: (totalCost) => {
 						if (activeTask) {
-							_taskStore.addCost(activeTask.id, totalCost);
+							const delta = totalCost - lastKnownFanOutCost;
+							lastKnownFanOutCost = totalCost;
+							if (delta > 0) _taskStore.addCost(activeTask.id, delta);
 						}
 					},
 				});
@@ -1161,6 +1164,7 @@ function registerParallelDispatch(
 			}, 1000);
 
 			try {
+				let lastKnownPdCost = 0;
 				const result = await executeParallelDispatch({
 					dispatches,
 					cwd,
@@ -1186,7 +1190,9 @@ function registerParallelDispatch(
 					},
 					onCostUpdate: (totalCost) => {
 						if (activeTask) {
-							_taskStore.addCost(activeTask.id, totalCost);
+							const delta = totalCost - lastKnownPdCost;
+							lastKnownPdCost = totalCost;
+							if (delta > 0) _taskStore.addCost(activeTask.id, delta);
 						}
 					},
 				});

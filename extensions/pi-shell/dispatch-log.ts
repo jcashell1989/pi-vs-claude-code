@@ -124,7 +124,7 @@ export function formatInjectionContext(matches: DispatchLogEntry[]): string | nu
     const outcomeStr = m.followUpNeeded
       ? `${m.outcome} → follow-up needed`
       : m.outcome;
-    const costStr = `$${m.cost.toFixed(3)}`;
+    const costStr = `$${(Number(m.cost) || 0).toFixed(3)}`;
     const elapsedStr = `${Math.round(m.elapsed / 1000)}s`;
 
     lines.push(

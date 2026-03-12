@@ -27,6 +27,7 @@ export interface FanOutOptions {
   agent: string;
   dispatches: FanOutDispatch[];
   cwd: string;
+  agentDefsDir?: string;
   model?: string;
   fallbackModel?: string;
   timeout: number;
@@ -102,6 +103,9 @@ export async function executeFanOut(options: FanOutOptions): Promise<FanOutResul
   const perAgentTimeout = timeout;
 
   // Launch all dispatches in parallel
+  // Track per-leg cost so we can compute deltas (spawnSubagent reports running totals)
+  const legCosts = new Array(dispatches.length).fill(0);
+
   const promises = dispatches.map(async (dispatch, index) => {
     const compositeKey = `${agent}-${index}`;
     const augmentedTask = dispatch.task + SUMMARY_INSTRUCTION;
@@ -112,6 +116,7 @@ export async function executeFanOut(options: FanOutOptions): Promise<FanOutResul
       model,
       fallbackModel: options.fallbackModel,
       cwd,
+      agentDefsDir: options.agentDefsDir,
       timeout: perAgentTimeout,
       maxResultTokens,
       sessionDir,
@@ -120,11 +125,12 @@ export async function executeFanOut(options: FanOutOptions): Promise<FanOutResul
       onUpdate: (data) => {
         if (onUpdate) onUpdate(dispatch.scope, data);
       },
-      onCostUpdate: (cost) => {
-        runningCost += cost;
+      onCostUpdate: (legTotal) => {
+        // legTotal is the running total for this single agent
+        const delta = legTotal - legCosts[index];
+        legCosts[index] = legTotal;
+        runningCost += delta;
         if (onCostUpdate) onCostUpdate(runningCost);
-        // Cost ceiling check — if exceeded, remaining agents get no warning
-        // (they'll complete naturally; we just report it)
       },
     });
 
@@ -192,13 +198,13 @@ export function formatFanOutResults(result: FanOutResult, agent: string): string
   for (const leg of result.legs) {
     const status = leg.exitCode === 0 ? "done" : "error";
     const elapsed = Math.round(leg.elapsed / 1000);
-    const costStr = `$${leg.cost.toFixed(3)}`;
+    const costStr = `$${(Number(leg.cost) || 0).toFixed(3)}`;
     lines.push(`--- ${agent} [${leg.scope}] (${status}, ${elapsed}s, ${costStr}) ---`);
     lines.push(leg.summary);
     lines.push("");
   }
 
-  const totalCostStr = `$${result.totalCost.toFixed(3)}`;
+  const totalCostStr = `$${(Number(result.totalCost) || 0).toFixed(3)}`;
   const totalElapsedStr = `${Math.round(result.totalElapsed / 1000)}s`;
   lines.push(`Fan-out complete: ${result.legs.length} dispatches, ${totalElapsedStr}, ${totalCostStr} total`);
 
