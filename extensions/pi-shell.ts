@@ -1135,7 +1135,7 @@ function registerFooter(
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 	_config: ShellConfig,
-	_shellState: { ghAvailable: boolean; activeProfile: string },
+	_shellState: { ghAvailable: boolean; activeProfile: string; activeModel: string },
 ): (ctx: ExtensionContext) => void {
 	let cachedBranch = "";
 	let branchLastRefresh = 0;
@@ -1215,8 +1215,8 @@ function registerFooter(
 					? sep + theme.fg("dim", "no-gh")
 					: "";
 
-				// orchestrator model (short name)
-				const fullModel = _config.orchestrator.model || "";
+				// orchestrator model (live from shellState, fallback to config)
+				const fullModel = _shellState.activeModel || _config.orchestrator.model || "";
 				const shortModel = fullModel.split("/").pop() || "";
 				const modelStr = shortModel
 					? sep + theme.fg("dim", shortModel)
@@ -1444,6 +1444,9 @@ function setupSessionStart(
 			}
 		}
 
+		// Capture actual model from pi runtime
+		shellState.activeModel = ctx.model?.id || _config.orchestrator.model || "";
+
 		// Lock to orchestrator-only tools (no codebase access)
 		pi.setActiveTools([...ORCHESTRATOR_TOOLS]);
 
@@ -1607,6 +1610,7 @@ export default function piShell(pi: ExtensionAPI) {
 	const shellState = {
 		ghAvailable: false,
 		activeProfile: (typeof config.api_keys?.default === "string" ? config.api_keys.default : "work"),
+		activeModel: "",
 	};
 
 	// --- Tools ---
