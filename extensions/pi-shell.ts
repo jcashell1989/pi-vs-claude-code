@@ -29,7 +29,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Container, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { Container, Text, truncateToWidth, visibleWidth, matchesKey, Key } from "@mariozechner/pi-tui";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
@@ -1721,6 +1721,11 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 				"  /kill [name]  Cancel a running agent",
 				"  /help         This guide",
 				"",
+				"Shortcuts:",
+				"  F2            Agent dashboard overlay",
+				"  F3            Kill agent (picker if multiple)",
+				"  Ctrl+X        Quick-kill most recent agent",
+				"",
 				"Shell:",
 				"  !<cmd>        Run a shell command (e.g. !ls, !git log)",
 				"  !!            Repeat last shell command",
@@ -1927,6 +1932,235 @@ function setupCompaction(pi: ExtensionAPI, _taskStore: TaskStore): void {
 	});
 }
 
+// ── Keyboard Shortcuts ─────────────────────────────────────────────────
+
+/** Register hotkeys for agent control */
+function registerShortcuts(
+	pi: ExtensionAPI,
+	_agentTracker: AgentTracker,
+	_taskStore: TaskStore,
+): void {
+	// F2 — Toggle agent dashboard overlay
+	pi.registerShortcut("f2", {
+		description: "Toggle agent dashboard",
+		handler: async (ctx) => {
+			if (!ctx.hasUI) return;
+			const running = _agentTracker.running();
+			const all = _agentTracker.getAll();
+			if (all.length === 0) {
+				ctx.ui.notify("No agents tracked yet", "info");
+				return;
+			}
+
+			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+				return {
+					render(width: number): string[] {
+						const agents = _agentTracker.getAll();
+						const lines: string[] = [];
+
+						const runCount = agents.filter(a => a.status === "running").length;
+						const doneCount = agents.filter(a => a.status === "done").length;
+						const errCount = agents.filter(a => a.status === "error").length;
+						lines.push(
+							theme.fg("accent", theme.bold(" AGENTS")) +
+							theme.fg("dim", " │ ") +
+							theme.fg("accent", `${runCount} running`) +
+							(doneCount ? theme.fg("dim", "  ") + theme.fg("success", `${doneCount} done`) : "") +
+							(errCount ? theme.fg("dim", "  ") + theme.fg("error", `${errCount} error`) : ""),
+						);
+						lines.push("");
+
+						// Group by groupId
+						const ungrouped: AgentState[] = [];
+						const groupMap = new Map<string, { type: string; agents: AgentState[] }>();
+						for (const agent of agents) {
+							if (agent.groupId) {
+								const existing = groupMap.get(agent.groupId);
+								if (existing) {
+									existing.agents.push(agent);
+								} else {
+									groupMap.set(agent.groupId, {
+										type: agent.groupType === "fan_out" ? "fan_out" : "parallel",
+										agents: [agent],
+									});
+								}
+							} else {
+								ungrouped.push(agent);
+							}
+						}
+
+						for (const [, group] of groupMap) {
+							const baseName = group.agents[0].name.replace(/-(p?\d+)$/, "");
+							const label = group.type === "fan_out"
+								? `fan_out: ${group.agents.length}× ${baseName}`
+								: `parallel: ${group.agents.length} agents`;
+							lines.push(theme.fg("dim", `  ── ${label} ──`));
+
+							for (const agent of group.agents) {
+								const icon = AGENT_STATUS_ICON[agent.status as keyof typeof AGENT_STATUS_ICON] || "◻";
+								const statusColor = agent.status === "running" ? "accent"
+									: agent.status === "done" ? "success" : "error";
+								const elapsed = Math.round(agent.elapsed / 1000);
+								const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
+								const displayName = agent.name.replace(/-(p?)(\d+)$/, (_, p, n) => `[${p}${n}]`);
+
+								const firstSentence = agent.task.split(/\.\s/)[0];
+								const maxLen = Math.min(60, Math.max(20, width - 35));
+								const taskPreview = firstSentence.length > maxLen
+									? firstSentence.slice(0, maxLen - 3) + "..."
+									: firstSentence;
+
+								lines.push(
+									theme.fg(statusColor, `  ${icon} ${displayName}`) +
+									theme.fg("dim", ` ${elapsed}s${costStr}`) +
+									theme.fg("muted", `  ${taskPreview}`),
+								);
+							}
+							lines.push("");
+						}
+
+						for (const agent of ungrouped) {
+							const icon = AGENT_STATUS_ICON[agent.status as keyof typeof AGENT_STATUS_ICON] || "◻";
+							const statusColor = agent.status === "running" ? "accent"
+								: agent.status === "done" ? "success" : "error";
+							const elapsed = Math.round(agent.elapsed / 1000);
+							const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
+
+							const firstSentence = agent.task.split(/\.\s/)[0];
+							const maxLen = Math.min(60, Math.max(20, width - 35));
+							const taskPreview = firstSentence.length > maxLen
+								? firstSentence.slice(0, maxLen - 3) + "..."
+								: firstSentence;
+
+							lines.push(
+								theme.fg(statusColor, `  ${icon} ${agent.name}`) +
+								theme.fg("dim", ` ${elapsed}s${costStr}`) +
+								theme.fg("muted", `  ${taskPreview}`),
+							);
+						}
+
+						lines.push("");
+						const totalCost = _agentTracker.totalCost();
+						if (totalCost > 0) {
+							lines.push(theme.fg("dim", `  Total session cost: $${totalCost.toFixed(3)}`));
+						}
+						lines.push(theme.fg("dim", "  Press ESC to close"));
+
+						return lines;
+					},
+					handleInput(data: string): void {
+						if (matchesKey(data, Key.escape) || matchesKey(data, "f2")) {
+							done();
+						}
+					},
+					invalidate() {},
+				};
+			}, {
+				overlay: true,
+				overlayOptions: { width: "80%", anchor: "center" },
+			});
+		},
+	});
+
+	// F3 — Kill agent (select from list if multiple)
+	pi.registerShortcut("f3", {
+		description: "Kill a running agent",
+		handler: async (ctx) => {
+			if (!ctx.hasUI) return;
+			const running = _agentTracker.running();
+			if (running.length === 0) {
+				ctx.ui.notify("No agents running", "info");
+				return;
+			}
+
+			// Single agent — kill immediately
+			if (running.length === 1) {
+				const agent = running[0];
+				if (agent.pid) {
+					try { process.kill(agent.pid, "SIGTERM"); } catch {}
+				}
+				_agentTracker.finish(agent.name, "error");
+				ctx.ui.notify(`Killed ${agent.name}`, "info");
+				return;
+			}
+
+			// Multiple — show picker
+			let selectedIndex = 0;
+			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+				return {
+					render(width: number): string[] {
+						const agents = _agentTracker.running();
+						const lines: string[] = [];
+						lines.push(theme.fg("accent", theme.bold(" KILL AGENT")) + theme.fg("dim", " — ↑↓ select, Enter kill, ESC cancel"));
+						lines.push("");
+
+						agents.forEach((agent, i) => {
+							const cursor = i === selectedIndex ? "▸ " : "  ";
+							const elapsed = Math.round(agent.elapsed / 1000);
+							const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
+							const highlight = i === selectedIndex ? "accent" : "muted";
+
+							lines.push(
+								theme.fg(highlight, `${cursor}${agent.name}`) +
+								theme.fg("dim", ` ${elapsed}s${costStr}`),
+							);
+						});
+						return lines;
+					},
+					handleInput(data: string): void {
+						const agents = _agentTracker.running();
+						if (matchesKey(data, Key.up)) {
+							selectedIndex = Math.max(0, selectedIndex - 1);
+							tui.requestRender();
+						} else if (matchesKey(data, Key.down)) {
+							selectedIndex = Math.min(agents.length - 1, selectedIndex + 1);
+							tui.requestRender();
+						} else if (matchesKey(data, Key.enter)) {
+							done(agents[selectedIndex]?.name ?? null);
+						} else if (matchesKey(data, Key.escape) || matchesKey(data, "f3")) {
+							done(null);
+						}
+					},
+					invalidate() {},
+				};
+			}, {
+				overlay: true,
+				overlayOptions: { width: "60%", anchor: "center" },
+			});
+
+			if (result) {
+				const agent = _agentTracker.get(result);
+				if (agent?.pid) {
+					try { process.kill(agent.pid, "SIGTERM"); } catch {}
+				}
+				if (agent) _agentTracker.finish(result, "error");
+				ctx.ui.notify(`Killed ${result}`, "info");
+			}
+		},
+	});
+
+	// Ctrl+X — Quick-kill: abort most recently started agent
+	pi.registerShortcut("ctrl+x", {
+		description: "Quick-kill most recent agent",
+		handler: async (ctx) => {
+			if (!ctx.hasUI) return;
+			const running = _agentTracker.running();
+			if (running.length === 0) {
+				ctx.ui.notify("No agents running", "info");
+				return;
+			}
+
+			// Kill the last one (most recently added)
+			const agent = running[running.length - 1];
+			if (agent.pid) {
+				try { process.kill(agent.pid, "SIGTERM"); } catch {}
+			}
+			_agentTracker.finish(agent.name, "error");
+			ctx.ui.notify(`Killed ${agent.name} (ctrl+x)`, "info");
+		},
+	});
+}
+
 // ── Extension Entry Point ──────────────────────────────────────────────
 
 // Resolve the project root from the extension file location
@@ -1967,6 +2201,9 @@ export default function piShell(pi: ExtensionAPI) {
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
 	registerImproveAgentsCommand(pi, config, taskStore, agentTracker, shellState);
+
+	// --- Shortcuts ---
+	registerShortcuts(pi, agentTracker, taskStore);
 
 	// --- Events ---
 	setupSessionStart(pi, config, taskStore, agentTracker, shellState, setupFooter, setupDashboard);
