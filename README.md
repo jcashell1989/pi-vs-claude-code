@@ -1,6 +1,10 @@
 # pi-vs-cc
 
-A collection of [Pi Coding Agent](https://github.com/mariozechner/pi-coding-agent) customized instances. _Why?_ To showcase what it looks like to hedge against the leader in the agentic coding market, Claude Code. Here we showcase how you can customize the UI, agent orchestration tools, safety auditing, and cross-agent integrations. 
+<div align="center">
+  <img src="./assets/pish-mascot.jpeg" alt="pish mascot" width="200">
+</div>
+
+A collection of [Pi Coding Agent](https://github.com/mariozechner/pi-coding-agent) customized instances. _Why?_ To showcase what it looks like to hedge against the leader in the agentic coding market, Claude Code. Here we showcase how you can customize the UI, agent orchestration tools, safety auditing, and cross-agent integrations.
 
 <div align="center">
   <img src="./images/pi-logo.png" alt="pi-vs-cc" width="700">
