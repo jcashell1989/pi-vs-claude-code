@@ -47,6 +47,7 @@ import {
 } from "./pi-shell/dispatch-log.ts";
 import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
 import { executeParallelDispatch, formatParallelResults, type ParallelDispatchLeg } from "./pi-shell/parallel-dispatch.ts";
+import { buildScoutMemoryPrefix } from "./pi-shell/memory.ts";
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
@@ -446,10 +447,19 @@ function registerDispatch(
 			// Resolve fallback model from active profile
 			const fallbackModel = _shellState.agentFallbacks?.[agent.toLowerCase()];
 
+			// Memory injection: prepend known context for scout dispatches
+			let effectiveTask = task;
+			if (agent.toLowerCase() === "scout") {
+				const memoryPrefix = buildScoutMemoryPrefix(cwd);
+				if (memoryPrefix) {
+					effectiveTask = memoryPrefix + task;
+				}
+			}
+
 			try {
 				const result = await spawnSubagent({
 					agent,
-					task,
+					task: effectiveTask,
 					model,
 					fallbackModel,
 					branch: targetBranch,
@@ -1026,10 +1036,22 @@ function registerFanOut(
 			}
 
 			try {
+				// Memory injection: prepend known context for scout fan-out legs
+				let effectiveDispatches = dispatches;
+				if (agent.toLowerCase() === "scout") {
+					const memoryPrefix = buildScoutMemoryPrefix(cwd);
+					if (memoryPrefix) {
+						effectiveDispatches = dispatches.map(d => ({
+							...d,
+							task: memoryPrefix + d.task,
+						}));
+					}
+				}
+
 				let lastKnownFanOutCost = 0;
 				const result = await executeFanOut({
 					agent,
-					dispatches,
+					dispatches: effectiveDispatches,
 					cwd,
 					agentDefsDir: PI_SHELL_ROOT,
 					model,

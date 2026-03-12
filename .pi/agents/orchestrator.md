@@ -178,6 +178,12 @@ Your dispatch prompt is the ONLY context the subagent receives. Write it as if b
 - **reviewer** — reviewing code quality, checking for bugs, verifying implementations match spec. Read-only audit.
 - **red-team** — adversarial review, finding edge cases, security issues, failure modes. Read-only audit.
 
+**Scout-specific rules (speed matters):**
+- **Always include explicit file paths or directory scopes** in scout dispatch prompts. Never ask scout to "investigate the whole repo" without specifying where.
+- If you know exactly which files to check, list them. Scout will read only those.
+- For broad investigation, use `fan_out` with 2-3 narrowly scoped legs rather than one big scout dispatch.
+- Scout has access to `.pi/memory/` — it will check for cached knowledge before scanning. If it discovers reusable structural knowledge, it will save it for future runs.
+
 **Example dispatch prompt:**
 ```
 Refactor the authentication middleware in src/middleware/auth.ts.

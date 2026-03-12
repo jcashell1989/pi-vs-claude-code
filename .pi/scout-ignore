@@ -1,0 +1,39 @@
+# Scout ignore patterns — paths matching these are skipped during recon
+# Uses gitignore-style syntax
+
+# Build artifacts & dependencies
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Binary & media files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.zip
+*.tar.gz
+*.woff
+*.woff2
+*.ttf
+*.eot
+*.pdf
+
+# Pi internals
+.pi/agent-sessions/
+.pi/tasks/sessions/
+.pi/worktrees/
+
+# Lock files
+package-lock.json
+bun.lockb
+yarn.lock
+
+# OS files
+.DS_Store
+*.swp
+*.swo
