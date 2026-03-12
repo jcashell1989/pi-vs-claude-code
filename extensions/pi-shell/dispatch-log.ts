@@ -61,6 +61,11 @@ export function logDispatch(cwd: string, entry: DispatchLogEntry): void {
   const dir = dirname(logPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  // Sanitize cost — guard against object leak (e.g. {input, output, total})
+  if (typeof entry.cost !== "number") {
+    entry.cost = Number((entry.cost as any)?.total ?? entry.cost) || 0;
+  }
+
   appendFileSync(logPath, JSON.stringify(entry) + "\n");
 
   // Rotate: keep only last MAX_ENTRIES

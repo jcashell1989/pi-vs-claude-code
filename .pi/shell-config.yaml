@@ -17,6 +17,7 @@ agent_models:
   builder: openrouter/deepseek/deepseek-v3.2
   reviewer: openrouter/deepseek/deepseek-v3.2
   red-team: openrouter/deepseek/deepseek-v3.2
+  plan-reviewer: openrouter/deepseek/deepseek-v3.2
   answer: openrouter/nvidia/nemotron-3-nano-30b-a3b:free
 
 agent_fallbacks:
@@ -24,6 +25,7 @@ agent_fallbacks:
   builder: openrouter/xiaomi/mimo-v2-flash
   reviewer: openrouter/mistralai/mistral-nemo
   red-team: openrouter/mistralai/mistral-nemo
+  plan-reviewer: openrouter/mistralai/mistral-nemo
   answer: openrouter/mistralai/mistral-nemo
 
 agent_timeouts:
