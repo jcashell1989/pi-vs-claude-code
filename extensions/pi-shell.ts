@@ -37,6 +37,7 @@ import { applyExtensionDefaults } from "./themeMap.ts";
 import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
+import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS, ORCHESTRATOR_TOOLS } from "./pi-shell/constants.ts";
 import { readFileSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
@@ -123,8 +124,6 @@ function createAgentTracker(): AgentTracker {
 
 /** Register the tilldone tool with persistent TaskStore and blocking gate */
 function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
-	const STATUS_ICON: Record<TaskStatus, string> = { idle: "○", inprogress: "●", done: "✓" };
-	const GATE_WHITELIST = ["tilldone", "answer", "git_status", "switch_key", "kill_agent"];
 
 	pi.registerTool({
 		name: "tilldone",
@@ -248,7 +247,7 @@ function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
 					}
 					const header = title ? `${title}:` : "Tasks:";
 					const lines = tasks.map((t) =>
-						`[${STATUS_ICON[t.status]}] #${t.id} (${t.status}): ${t.text}`
+						`[${TASK_STATUS_ICON[t.status]}] #${t.id} (${t.status}): ${t.text}`
 					);
 					return {
 						content: [{ type: "text" as const, text: `${header}\n${lines.join("\n")}` }],
@@ -287,7 +286,7 @@ function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
 
 	// Blocking gate: prevent non-whitelisted tools when no task is active
 	pi.on("tool_call", async (event, _ctx) => {
-		if (GATE_WHITELIST.includes(event.toolName)) return { block: false };
+		if (TILLDONE_TOOLS.includes(event.toolName as any)) return { block: false };
 
 		const tasks = taskStore.getAll();
 		const active = taskStore.getActive();
@@ -848,16 +847,10 @@ function registerFooter(
 					: "";
 
 				// active agents with status icons
-				const STATUS_ICON: Record<string, string> = {
-					running: "⟳",
-					done: "✓",
-					error: "✗",
-					idle: "◻",
-				};
 				const allAgents = _agentTracker.getAll();
 				const agentParts = allAgents
 					.filter((a) => a.status === "running" || a.status === "idle")
-					.map((a) => theme.fg("accent", `${a.name}${STATUS_ICON[a.status] || "◻"}`));
+					.map((a) => theme.fg("accent", `${a.name}${AGENT_FOOTER_ICON[a.status as keyof typeof AGENT_FOOTER_ICON] || "◻"}`));
 				const agentStr = agentParts.length > 0
 					? sep + agentParts.join(" ")
 					: "";
@@ -880,8 +873,15 @@ function registerFooter(
 					? sep + theme.fg("dim", "no-gh")
 					: "";
 
+				// orchestrator model (short name)
+				const fullModel = _config.orchestrator.model || "";
+				const shortModel = fullModel.split("/").pop() || "";
+				const modelStr = shortModel
+					? sep + theme.fg("dim", shortModel)
+					: "";
+
 				const left = cwdStr + branchStr + taskStr + agentStr;
-				const right = costStr + profileStr + ghStr + " ";
+				const right = modelStr + costStr + profileStr + ghStr + " ";
 				const pad = " ".repeat(
 					Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
 				);
@@ -913,12 +913,7 @@ function registerDashboard(_pi: ExtensionAPI, _agentTracker: AgentTracker): (ctx
 						return [];
 					}
 
-					const STATUS_ICON: Record<string, string> = {
-						running: "●",
-						done: "✓",
-						error: "✗",
-						idle: "◻",
-					};
+
 
 					const lines: string[] = [];
 					lines.push(
@@ -927,7 +922,7 @@ function registerDashboard(_pi: ExtensionAPI, _agentTracker: AgentTracker): (ctx
 					);
 
 					for (const agent of running) {
-						const icon = STATUS_ICON[agent.status] || "◻";
+						const icon = AGENT_STATUS_ICON[agent.status as keyof typeof AGENT_STATUS_ICON] || "◻";
 						const statusColor = agent.status === "running" ? "accent"
 							: agent.status === "done" ? "success" : "error";
 						const elapsed = Math.round(agent.elapsed / 1000);
@@ -979,10 +974,10 @@ function registerStatusCommand(pi: ExtensionAPI, _taskStore: TaskStore): void {
 				_ctx.ui.notify("No tasks yet", "info");
 				return;
 			}
-			const icons: Record<TaskStatus, string> = { idle: "○", inprogress: "●", done: "✓" };
+
 			const lines: string[] = [_taskStore.getTitle(), ""];
 			for (const t of tasks) {
-				let line = `${icons[t.status]} #${t.id} ${t.text}`;
+				let line = `${TASK_STATUS_ICON[t.status]} #${t.id} ${t.text}`;
 				if (t.branch) line += ` [${t.branch}]`;
 				if (t.cost && t.cost > 0) line += ` $${t.cost.toFixed(3)}`;
 				lines.push(line);
@@ -1091,7 +1086,7 @@ function setupSessionStart(
 		}
 
 		// Lock to orchestrator-only tools (no codebase access)
-		pi.setActiveTools(["tilldone", "dispatch_agent", "answer", "git_status", "switch_key", "kill_agent"]);
+		pi.setActiveTools([...ORCHESTRATOR_TOOLS]);
 
 		// TaskStore loads from disk on creation — no explicit load needed
 
@@ -1171,7 +1166,6 @@ function setupBeforeAgentStart(pi: ExtensionAPI, _config: ShellConfig): void {
 
 /** Set up agent_end: nudge orchestrator if tasks remain incomplete */
 function setupAgentEnd(pi: ExtensionAPI, _taskStore: TaskStore): void {
-	const STATUS_ICON: Record<string, string> = { idle: "○", inprogress: "●", done: "✓" };
 	let nudgedThisCycle = false;
 
 	pi.on("agent_end", async (_event, _ctx) => {
@@ -1179,7 +1173,7 @@ function setupAgentEnd(pi: ExtensionAPI, _taskStore: TaskStore): void {
 		if (incomplete.length === 0 || nudgedThisCycle) return;
 		nudgedThisCycle = true;
 		const taskList = incomplete
-			.map((t) => `  ${STATUS_ICON[t.status] ?? "?"} #${t.id} [${t.status}]: ${t.text}`)
+			.map((t) => `  ${TASK_STATUS_ICON[t.status] ?? "?"} #${t.id} [${t.status}]: ${t.text}`)
 			.join("\n");
 		pi.sendMessage(
 			{

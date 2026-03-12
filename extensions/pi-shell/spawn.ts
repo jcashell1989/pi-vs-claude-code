@@ -64,7 +64,7 @@ function loadAgentDef(agentName: string, cwd: string): AgentDef | null {
 		return {
 			name: frontmatter.name,
 			description: frontmatter.description || "",
-			tools: frontmatter.tools || "read,grep,find,ls",
+			tools: frontmatter.tools || "read,bash,grep",
 			systemPrompt: match[2].trim(),
 		};
 	} catch {
