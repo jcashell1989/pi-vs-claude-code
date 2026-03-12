@@ -1,5 +1,5 @@
 orchestrator:
-  model: openrouter/nousresearch/hermes-4-70b
+  model: openrouter/inception/mercury-2
   max_dispatch_result_tokens: 8000
   compaction_summary: true
 
@@ -11,32 +11,35 @@ context_injection:
   enabled: true
   max_matches: 3
 
+# Shared defaults — all profiles inherit these
 agent_models:
-  scout: openrouter/nousresearch/hermes-4-70b
-  planner: openrouter/nousresearch/hermes-4-70b
+  scout: openrouter/deepseek/deepseek-v3.2
   builder: openrouter/deepseek/deepseek-v3.2
-  reviewer: openrouter/nousresearch/hermes-4-70b
+  reviewer: openrouter/xiaomi/mimo-v2-flash
   red-team: openrouter/qwen/qwen3-235b-a22b-thinking-2507
-  answer: openrouter/mistralai/mistral-nemo
+  answer: openrouter/nvidia/nemotron-3-nano-30b-a3b:free
 
 agent_fallbacks:
   scout: openrouter/mistralai/mistral-nemo
-  planner: openrouter/deepseek/deepseek-chat-v3.1
-  builder: openrouter/nousresearch/hermes-4-70b
+  builder: openrouter/deepseek/deepseek-v3.2
   reviewer: openrouter/deepseek/deepseek-chat
-  red-team: openrouter/nousresearch/hermes-4-70b
-  answer: openrouter/nousresearch/hermes-4-70b
+  red-team: openrouter/deepseek/deepseek-v3.2
+  answer: openrouter/mistralai/mistral-nemo
 
 agent_timeouts:
   scout: 300
-  planner: 300
   builder: 900
   reviewer: 600
   answer: 120
 
-api_keys:
+# Profiles — per-profile key + model overrides
+profiles:
   work:
     op: "op://Personal/murmur openrouter key/credential"
+    agent_models:
+      builder: openrouter/anthropic/claude-sonnet-4.6
+    agent_fallbacks:
+      builder: openrouter/deepseek/deepseek-v3.2
   personal:
     op: "op://Personal/murmur openrouter key/credential"
   default: work

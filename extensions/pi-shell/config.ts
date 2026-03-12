@@ -2,6 +2,12 @@ import { parse as yamlParse } from "yaml";
 import * as fs from "fs";
 import * as path from "path";
 
+export interface ProfileConfig {
+  op: string;
+  agent_models?: Record<string, string>;
+  agent_fallbacks?: Record<string, string>;
+}
+
 export interface ShellConfig {
   orchestrator: {
     model: string;
@@ -19,7 +25,7 @@ export interface ShellConfig {
   agent_models: Record<string, string>;
   agent_fallbacks: Record<string, string>;
   agent_timeouts: Record<string, number>;
-  api_keys: Record<string, { op: string }> & { default: string };
+  profiles: Record<string, ProfileConfig> & { default: string };
   interactive_commands: string[];
   git: {
     auto_branch: boolean;
@@ -31,7 +37,7 @@ export interface ShellConfig {
 
 const DEFAULT_CONFIG: ShellConfig = {
   orchestrator: {
-    model: "openrouter/nousresearch/hermes-4-70b",
+    model: "openrouter/inception/mercury-2",
     max_dispatch_result_tokens: 8000,
     compaction_summary: true,
   },
@@ -44,31 +50,38 @@ const DEFAULT_CONFIG: ShellConfig = {
     max_matches: 3,
   },
   agent_models: {
-    scout: "openrouter/nousresearch/hermes-4-70b",
-    planner: "openrouter/nousresearch/hermes-4-70b",
+    scout: "openrouter/deepseek/deepseek-v3.2",
     builder: "openrouter/deepseek/deepseek-v3.2",
-    reviewer: "openrouter/nousresearch/hermes-4-70b",
+    reviewer: "openrouter/xiaomi/mimo-v2-flash",
     "red-team": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
-    answer: "openrouter/mistralai/mistral-nemo",
+    answer: "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
   },
   agent_fallbacks: {
     scout: "openrouter/mistralai/mistral-nemo",
-    planner: "openrouter/deepseek/deepseek-chat-v3.1",
-    builder: "openrouter/nousresearch/hermes-4-70b",
+    builder: "openrouter/deepseek/deepseek-v3.2",
     reviewer: "openrouter/deepseek/deepseek-chat",
-    "red-team": "openrouter/nousresearch/hermes-4-70b",
-    answer: "openrouter/nousresearch/hermes-4-70b",
+    "red-team": "openrouter/deepseek/deepseek-v3.2",
+    answer: "openrouter/mistralai/mistral-nemo",
   },
   agent_timeouts: {
     scout: 300,
-    planner: 300,
     builder: 900,
     reviewer: 600,
     answer: 120,
   },
-  api_keys: {
-    work: { op: "op://Personal/murmur openrouter key/credential" },
-    personal: { op: "op://Personal/murmur openrouter key/credential" },
+  profiles: {
+    work: {
+      op: "op://Personal/murmur openrouter key/credential",
+      agent_models: {
+        builder: "openrouter/anthropic/claude-sonnet-4.6",
+      },
+      agent_fallbacks: {
+        builder: "openrouter/deepseek/deepseek-v3.2",
+      },
+    },
+    personal: {
+      op: "op://Personal/murmur openrouter key/credential",
+    },
     default: "work",
   },
   interactive_commands: [
@@ -82,6 +95,29 @@ const DEFAULT_CONFIG: ShellConfig = {
     require_gh: false,
   },
 };
+
+/**
+ * Resolve effective agent_models for a given profile by merging
+ * profile-specific overrides on top of shared defaults.
+ */
+export function resolveProfileModels(config: ShellConfig, profile: string): Record<string, string> {
+  const profileConfig = (config.profiles as Record<string, any>)[profile];
+  if (!profileConfig || typeof profileConfig === "string") {
+    return { ...config.agent_models };
+  }
+  return { ...config.agent_models, ...(profileConfig.agent_models || {}) };
+}
+
+/**
+ * Resolve effective agent_fallbacks for a given profile.
+ */
+export function resolveProfileFallbacks(config: ShellConfig, profile: string): Record<string, string> {
+  const profileConfig = (config.profiles as Record<string, any>)[profile];
+  if (!profileConfig || typeof profileConfig === "string") {
+    return { ...config.agent_fallbacks };
+  }
+  return { ...config.agent_fallbacks, ...(profileConfig.agent_fallbacks || {}) };
+}
 
 /**
  * Deep merge source into target, returning a new object.

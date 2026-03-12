@@ -12,11 +12,13 @@ if [ -f "$CONFIG" ]; then
     MODEL=$(grep -A5 '^orchestrator:' "$CONFIG" | grep 'model:' | head -1 | sed 's/.*model: *//' | tr -d '[:space:]')
 fi
 
-# Extract default profile and its op reference, then inject key into auth.json
+# Extract default profile from profiles section, then inject its op key into auth.json
 if [ -f "$CONFIG" ] && command -v op >/dev/null 2>&1; then
-    DEFAULT_PROFILE=$(grep -A1 '^  default:' "$CONFIG" | head -1 | sed 's/.*default: *//' | tr -d '[:space:]')
+    # Get default profile name from profiles.default
+    DEFAULT_PROFILE=$(awk '/^profiles:/{found=1} found && /^  default:/{print $2; exit}' "$CONFIG" | tr -d '[:space:]')
     if [ -n "$DEFAULT_PROFILE" ]; then
-        OP_REF=$(grep -A2 "^  ${DEFAULT_PROFILE}:" "$CONFIG" | grep 'op:' | head -1 | sed 's/^[^:]*: *//' | tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Get op reference for that profile
+        OP_REF=$(awk -v prof="  ${DEFAULT_PROFILE}:" '/^profiles:/{found=1} found && $0==prof{inprof=1} inprof && /op:/{sub(/^[^:]*: */, ""); gsub(/["'"'"']/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit}' "$CONFIG")
         if [ -n "$OP_REF" ]; then
             mkdir -p "$(dirname "$AUTH_JSON")"
             # Key goes straight from op into auth.json — never stored in a variable

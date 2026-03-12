@@ -35,7 +35,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
 import * as os from "os";
 import { applyExtensionDefaults } from "./themeMap.ts";
-import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/config.ts";
+import { loadConfig as loadShellConfig, resolveProfileModels, resolveProfileFallbacks, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
 import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS, ORCHESTRATOR_TOOLS } from "./pi-shell/constants.ts";
@@ -315,6 +315,7 @@ function registerDispatch(
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	_shellState: { agentModels: Record<string, string>; agentFallbacks: Record<string, string> },
 ): void {
 	const cwd = process.cwd();
 	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
@@ -336,8 +337,8 @@ function registerDispatch(
 			const activeTask = _taskStore.getActive();
 			const taskId = activeTask?.id ?? 0;
 
-			// Resolve model from config
-			const model = _config.agent_models[agent.toLowerCase()];
+			// Resolve model from active profile
+			const model = _shellState.agentModels[agent.toLowerCase()];
 
 			// Resolve timeout from config (default 600s)
 			const timeout = _config.agent_timeouts[agent.toLowerCase()] ?? 600;
@@ -393,8 +394,8 @@ function registerDispatch(
 				markFollowUps(cwd, taskId, dispatchId);
 			}
 
-			// Resolve fallback model from config
-			const fallbackModel = _config.agent_fallbacks?.[agent.toLowerCase()];
+			// Resolve fallback model from active profile
+			const fallbackModel = _shellState.agentFallbacks?.[agent.toLowerCase()];
 
 			try {
 				const result = await spawnSubagent({
@@ -542,6 +543,7 @@ function registerAnswer(
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	_shellState: { agentModels: Record<string, string>; agentFallbacks: Record<string, string> },
 ): void {
 	const cwd = process.cwd();
 	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
@@ -560,11 +562,11 @@ function registerAnswer(
 			const task = _taskStore.add(question);
 			_taskStore.toggle(task.id); // idle -> inprogress
 
-			const model = _config.agent_models.answer || _config.agent_models.scout;
+			const model = _shellState.agentModels.answer || _shellState.agentModels.scout;
 			const timeout = _config.agent_timeouts.answer ?? 120;
 			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 
-			const answerFallback = _config.agent_fallbacks?.answer;
+			const answerFallback = _shellState.agentFallbacks?.answer;
 
 			try {
 				// 2. Spawn read-only scout subagent
@@ -752,7 +754,11 @@ function registerGitStatus(pi: ExtensionAPI): void {
 function registerSwitchKeyCommand(
 	pi: ExtensionAPI,
 	_config: ShellConfig,
-	_shellState: { activeProfile: string },
+	_shellState: {
+		activeProfile: string;
+		agentModels: Record<string, string>;
+		agentFallbacks: Record<string, string>;
+	},
 ): void {
 	const { execSync } = require("child_process") as typeof import("child_process");
 	const authJsonPath = path.join(os.homedir(), ".pi", "agent", "auth.json");
@@ -762,14 +768,14 @@ function registerSwitchKeyCommand(
 		handler: async (_args, _ctx) => {
 			const profile = _args?.trim();
 			if (!profile) {
-				const available = Object.keys(_config.api_keys).filter((k) => k !== "default");
+				const available = Object.keys(_config.profiles).filter((k) => k !== "default");
 				_ctx.ui.notify(`Usage: /switch-key <profile>\nAvailable: ${available.join(", ")}`, "info");
 				return;
 			}
 
-			const profileConfig = (_config.api_keys as Record<string, any>)[profile];
+			const profileConfig = (_config.profiles as Record<string, any>)[profile];
 			if (!profileConfig || typeof profileConfig === "string") {
-				const available = Object.keys(_config.api_keys).filter((k) => k !== "default");
+				const available = Object.keys(_config.profiles).filter((k) => k !== "default");
 				_ctx.ui.notify(`Unknown profile '${profile}'. Available: ${available.join(", ")}`, "error");
 				return;
 			}
@@ -810,11 +816,17 @@ function registerSwitchKeyCommand(
 				return;
 			}
 
-			// Step 4: Update footer
+			// Step 4: Switch active profile — update key, models, and fallbacks
 			_shellState.activeProfile = profile;
+			_shellState.agentModels = resolveProfileModels(_config, profile);
+			_shellState.agentFallbacks = resolveProfileFallbacks(_config, profile);
 
-			// Step 5: Confirm
-			_ctx.ui.notify(`Switched to profile '${profile}'\nauth.json updated, key verified.`, "info");
+			// Step 5: Confirm with model summary
+			const builderModel = _shellState.agentModels.builder?.split("/").pop() || "default";
+			_ctx.ui.notify(
+				`Switched to '${profile}'\nKey verified. Builder: ${builderModel}`,
+				"info",
+			);
 		},
 	});
 }
@@ -885,6 +897,7 @@ function registerFanOut(
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	_shellState: { agentModels: Record<string, string>; agentFallbacks: Record<string, string> },
 ): void {
 	const cwd = process.cwd();
 	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
@@ -918,8 +931,8 @@ function registerFanOut(
 
 			const activeTask = _taskStore.getActive();
 			const taskId = activeTask?.id ?? 0;
-			const model = _config.agent_models[agent.toLowerCase()];
-			const fallbackModel = _config.agent_fallbacks?.[agent.toLowerCase()];
+			const model = _shellState.agentModels[agent.toLowerCase()];
+			const fallbackModel = _shellState.agentFallbacks?.[agent.toLowerCase()];
 			const timeout = _config.agent_timeouts[agent.toLowerCase()] ?? 300;
 			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 			const costCeiling = _config.fan_out.cost_ceiling;
@@ -1063,6 +1076,7 @@ function registerImproveAgentsCommand(
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	_shellState: { agentModels: Record<string, string>; agentFallbacks: Record<string, string> },
 ): void {
 	const cwd = process.cwd();
 	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
@@ -1127,7 +1141,7 @@ function registerImproveAgentsCommand(
 			_ctx.ui.notify("Analyzing dispatch log and generating improvement proposals...", "info");
 
 			try {
-				const model = _config.agent_models.reviewer || "openrouter/anthropic/claude-sonnet-4";
+				const model = _shellState.agentModels.reviewer || "openrouter/deepseek/deepseek-v3.2";
 				const timeout = _config.agent_timeouts.reviewer ?? 600;
 				const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 
@@ -1439,7 +1453,7 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 				"  scout         Fast read-only codebase recon",
 				"  builder       Code implementation (read/write/edit)",
 				"  reviewer      Code review and quality checks",
-				"  planner       Architecture and implementation planning",
+				"  plan-reviewer Plan critic — reviews and challenges plans",
 				"  red-team      Security and adversarial testing",
 				"  documenter    Documentation generation",
 				"",
@@ -1648,17 +1662,20 @@ export default function piShell(pi: ExtensionAPI) {
 	// --- State ---
 	const taskStore = createPersistentTaskStore();
 	const agentTracker = createAgentTracker();
+	const defaultProfile = (typeof config.profiles?.default === "string" ? config.profiles.default : "work");
 	const shellState = {
 		ghAvailable: false,
-		activeProfile: (typeof config.api_keys?.default === "string" ? config.api_keys.default : "work"),
+		activeProfile: defaultProfile,
 		activeModel: "",
+		agentModels: resolveProfileModels(config, defaultProfile),
+		agentFallbacks: resolveProfileFallbacks(config, defaultProfile),
 	};
 
 	// --- Tools ---
 	registerTillDone(pi, taskStore);
-	registerDispatch(pi, config, taskStore, agentTracker);
-	registerFanOut(pi, config, taskStore, agentTracker);
-	registerAnswer(pi, config, taskStore, agentTracker);
+	registerDispatch(pi, config, taskStore, agentTracker, shellState);
+	registerFanOut(pi, config, taskStore, agentTracker, shellState);
+	registerAnswer(pi, config, taskStore, agentTracker, shellState);
 	registerGitStatus(pi);
 	registerSwitchKeyCommand(pi, config, shellState);
 	registerKillAgent(pi, agentTracker);
@@ -1669,7 +1686,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerStatusCommand(pi, taskStore);
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
-	registerImproveAgentsCommand(pi, config, taskStore, agentTracker);
+	registerImproveAgentsCommand(pi, config, taskStore, agentTracker, shellState);
 
 	// --- Events ---
 	setupSessionStart(pi, config, taskStore, agentTracker, shellState, setupFooter, setupDashboard);

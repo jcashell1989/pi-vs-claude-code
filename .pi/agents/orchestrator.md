@@ -103,7 +103,6 @@ Your dispatch prompt is the ONLY context the subagent receives. Write it as if b
 
 **Choose the right agent:**
 - **scout** — investigating codebase structure, finding patterns, reading files to answer questions, locating code. Read-only.
-- **planner** — analyzing requirements, producing implementation plans, identifying risks and dependencies. Read-only.
 - **builder** — writing code, creating files, implementing features, fixing bugs. Has full edit access.
 - **reviewer** — reviewing code quality, checking for bugs, verifying implementations match spec. Read-only audit.
 - **red-team** — adversarial review, finding edge cases, security issues, failure modes. Read-only audit.

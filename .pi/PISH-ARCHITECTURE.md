@@ -194,35 +194,47 @@ These agents can modify the codebase. They run on branches and commit their work
 |-------|------------------|--------------------|---------|-----------------|
 | **Orchestrator** | Tool use, judgment, instruction following | Coding ability | Every interaction | Medium — always running |
 | **Scout** | Speed, navigation, conciseness | Deep reasoning | High — runs first in most workflows | High — frequent |
-| **Planner** | Architectural reasoning, risk ID | Code generation | Medium | Medium |
 | **Builder** | Code quality (SWE-bench), multi-file editing | Speed | Medium but expensive per run | Low — quality > cost |
 | **Reviewer** | Bug detection, attention to detail | Creativity | Medium — runs after builder | Medium |
 | **Red-Team** | Adversarial thinking, security knowledge | Speed | Low — only for security-sensitive work | Low — quality > cost |
-| **Plan-Reviewer** | Critical thinking, feasibility sense | Code generation | Low | High — brief runs |
 | **Answer** | Speed, cheapness | Deep reasoning | High | Very high — should be near-free |
 
-## Current Model Assignment & Known Issues
+## Model Assignment (Profile-Based)
 
-| Role | Current Model | Cost (in/out) | Status |
-|------|--------------|---------------|--------|
-| Orchestrator | hermes-4-70b | $0.13/$0.40 | **BROKEN** — no tool use support on OpenRouter |
-| Scout | hermes-4-70b | $0.13/$0.40 | Works (no tool use needed) |
-| Planner | hermes-4-70b | $0.13/$0.40 | Works |
-| Builder | deepseek-v3.2 | $0.26/$0.38 | Works |
-| Reviewer | hermes-4-70b | $0.13/$0.40 | Works |
-| Red-Team | qwen3-235b-thinking | $0.11/$0.60 | Works |
-| Answer | mistral-nemo | $0.02/$0.04 | Works |
+Profiles switch both the API key and the model lineup. Shared defaults apply to both profiles; per-profile overrides are listed where they differ.
 
-### Open Questions
+### Shared Defaults (all profiles)
 
-1. **Orchestrator model** — Needs tool use. DeepSeek V3.2 ($0.26/$0.38) is proven but same model as builder. Qwen3.5 Flash ($0.10/$0.40) has 1M context and ZDR. Others?
+| Role | Model | Cost (in/out $/M) | Why |
+|------|-------|--------------------|-----|
+| Orchestrator | Mercury 2 (Inception) | $0.25/$0.75 | Tool use, strong instruction following, ZDR |
+| Scout | DeepSeek V3.2 | $0.26/$0.38 | Best cost/perf, strong code comprehension |
+| Reviewer | MiMo-V2-Flash (Xiaomi) | $0.09/$0.29 | 73.4% SWE-bench at near-zero cost |
+| Red-Team | Qwen3-235B Thinking | $0.11/$0.60 | Reasoning model for adversarial analysis |
+| Answer | Nemotron 3 Nano 30B (free) | $0/$0 | Free, 256K context, good enough for Q&A |
 
-2. **Is hermes-4-70b the right choice for read-only agents?** — It's cheap and capable, but lacks tool use (fine for subagents since they use pi's tool system, not OpenRouter's). Quality-wise, is it strong enough for reviewer and planner roles?
+### Work Profile Overrides
 
-3. **Red-team model** — Qwen3-235b-thinking is a reasoning model, which suits adversarial analysis. But at $0.11/$0.60 it's cheap on input, expensive on output — and red-team produces long output. Is there a better fit?
+| Role | Model | Cost (in/out $/M) | Why |
+|------|-------|--------------------|-----|
+| Builder | Claude Sonnet 4.6 | $3/$15 | 79.6% SWE-bench, ZDR, 1M context |
 
-4. **Where does Mercury 2 fit?** — $0.25/$0.75, strong general capability, tool use supported. Could upgrade scout, planner, or reviewer quality. But nearly 2x the cost of hermes for read-only roles.
+Fallback: DeepSeek V3.2
 
-5. **Builder alternatives** — DeepSeek V3.2 is the best cost/performance ratio on the market (67.8% SWE-bench at $0.26/$0.38). Is it good enough, or do we need tiered builders (cheap for simple tasks, premium for complex ones)?
+### Personal Profile Overrides
 
-6. **Fan-out cost** — Parallel scouts multiply cost by N. With hermes at $0.13 input, a 3-way fan-out costs ~$0.39 input alone. With a more expensive model, this adds up.
+| Role | Model | Cost (in/out $/M) | Why |
+|------|-------|--------------------|-----|
+| Builder | DeepSeek V3.2 | $0.26/$0.38 | Best cost/perf when budget matters |
+
+### Estimated Cost Per Dispatch Cycle
+
+Work profile (orchestrator + scout + builder + reviewer): ~$1-4 depending on token volume.
+Personal profile: ~$0.30-1.50.
+
+### Design Decisions
+
+- **Planner removed** — the orchestrator handles planning. Having a separate planner agent was redundant.
+- **Profile-based models** — `/switch-key` swaps both the API key (via 1Password) and the active model config. Work profile pays for Sonnet quality on builder; personal uses DeepSeek.
+- **Mercury 2 for orchestrator** — supports tool calling (required by pi), strong instruction following for routing, $0.25/$0.75 is reasonable for the always-on role.
+- **Only builder varies by profile** — the other roles don't benefit enough from premium models to justify the cost difference.
