@@ -1,3 +1,22 @@
+# Pi Agent Project Command Runner
+# 
+# This justfile is a command runner for the Pi agent project using the `just` task runner
+# (similar to make). It provides convenient launching of different Pi configurations with
+# various extension combinations for testing, development, and demonstration purposes.
+#
+# The file includes 16+ different extension configurations that showcase Pi's capabilities:
+# - Core configurations: pi, ext-pure-focus, ext-minimal, ext-cross-agent
+# - Advanced features: agent teams, system selection, damage control, agent chains
+# - Development tools: theme cycling, session replay, tool counters, subagent widgets
+# - Meta-agents: Pi Pi (agent builder), Pi Shell (orchestrator shell)
+#
+# Main command categories:
+# - Individual extension demos (ext-*): Launch Pi with specific extension combinations
+# - Utility commands: `just open <extensions>` opens Pi in new terminal window
+# - Mass testing: `just all` opens every configuration in separate terminal windows
+#
+# Usage: `just` (shows available commands) or `just <command-name>` to run specific config
+
 set dotenv-load := true
 
 default:

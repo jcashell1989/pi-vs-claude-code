@@ -34,6 +34,8 @@ export interface SpawnResult {
 	exitCode: number;
 	cost: number;     // total cost from this subagent run
 	elapsed: number;  // milliseconds
+	conflict: boolean;
+	actualBranch?: string;
 }
 
 // ── Agent Definition Parser ────────────────────────────────────────────
@@ -72,13 +74,19 @@ function loadAgentDef(agentName: string, cwd: string): AgentDef | null {
 
 // ── Git Branch Helpers ─────────────────────────────────────────────────
 
-function checkoutBranch(branch: string, cwd: string): void {
+function checkoutBranch(branch: string, cwd: string): string {
 	try {
-		// Try to checkout existing branch first
 		execSync(`git checkout ${branch}`, { cwd, stdio: "ignore" });
+		return branch;
 	} catch {
-		// Branch doesn't exist — create it
-		execSync(`git checkout -b ${branch}`, { cwd, stdio: "ignore" });
+		try {
+			execSync(`git checkout -b ${branch}`, { cwd, stdio: "ignore" });
+			return branch;
+		} catch {
+			const fallback = `${branch}_${Date.now()}`;
+			execSync(`git checkout -b ${fallback}`, { cwd, stdio: "ignore" });
+			return fallback;
+		}
 	}
 }
 
@@ -116,6 +124,7 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 			exitCode: 1,
 			cost: 0,
 			elapsed: 0,
+			conflict: false,
 		};
 	}
 
@@ -126,15 +135,17 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 	const sessionFile = join(sessionDir, `${agent}-${taskId}.jsonl`);
 
 	// Switch to target branch if specified
+	let actualBranch: string | undefined;
 	if (branch) {
 		try {
-			checkoutBranch(branch, cwd);
+			actualBranch = checkoutBranch(branch, cwd);
 		} catch (err: any) {
 			return {
 				output: `Failed to checkout branch "${branch}": ${err?.message || err}`,
 				exitCode: 1,
 				cost: 0,
 				elapsed: 0,
+				conflict: false,
 			};
 		}
 	}
@@ -157,6 +168,7 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 
 	const startTime = Date.now();
 	let totalCost = 0;
+	let conflictDetected = false;
 	const textChunks: string[] = [];
 
 	return new Promise<SpawnResult>((resolve) => {
@@ -213,6 +225,9 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 					if (delta?.type === "text_delta") {
 						const text = delta.delta || "";
 						textChunks.push(text);
+						if (!conflictDetected && /conflict|merge conflict/i.test(text)) {
+							conflictDetected = true;
+						}
 						if (onUpdate) {
 							onUpdate({ type: "text_delta", content: text });
 						}
@@ -301,6 +316,8 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 				exitCode: killed && code !== 0 ? (code ?? 124) : (code ?? 1),
 				cost: totalCost,
 				elapsed,
+				conflict: conflictDetected,
+				actualBranch,
 			});
 		});
 
@@ -320,6 +337,8 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 				exitCode: 1,
 				cost: totalCost,
 				elapsed: Date.now() - startTime,
+				conflict: conflictDetected,
+				actualBranch,
 			});
 		});
 	});

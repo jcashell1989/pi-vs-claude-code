@@ -402,6 +402,15 @@ function registerDispatch(
 
 				clearInterval(elapsedTimer);
 
+				// Surface conflict info from dispatch result
+				const conflictWarning = result.conflict ? "⚠️ MERGE CONFLICT DETECTED — manual resolution needed\n" : "";
+
+				// Track actual branch if it differs from target
+				if (result.actualBranch && result.actualBranch !== targetBranch) {
+					if (activeTask) _taskStore.setBranch(activeTask.id, result.actualBranch);
+					targetBranch = result.actualBranch;
+				}
+
 				const status = result.exitCode === 0 ? "done" : "error";
 				_agentTracker.update(agent, { elapsed: result.elapsed, cost: result.cost });
 				_agentTracker.finish(agent, status);
@@ -410,7 +419,7 @@ function registerDispatch(
 					(result.cost > 0 ? ` ($${result.cost.toFixed(3)})` : "");
 
 				return {
-					content: [{ type: "text" as const, text: `${summary}\n\n${result.output}` }],
+					content: [{ type: "text" as const, text: `${conflictWarning}${summary}\n\n${result.output}` }],
 					details: {
 						agent,
 						task,
@@ -782,6 +791,7 @@ function registerFooter(
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 	_config: ShellConfig,
+	_shellState: { ghAvailable: boolean },
 ): (ctx: ExtensionContext) => void {
 	let cachedBranch = "";
 	let branchLastRefresh = 0;
@@ -866,8 +876,12 @@ function registerFooter(
 					? sep + theme.fg("muted", profile)
 					: "";
 
+				const ghStr = !_shellState.ghAvailable && _config.git.auto_pr
+					? sep + theme.fg("dim", "no-gh")
+					: "";
+
 				const left = cwdStr + branchStr + taskStr + agentStr;
-				const right = costStr + profileStr + " ";
+				const right = costStr + profileStr + ghStr + " ";
 				const pad = " ".repeat(
 					Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
 				);
@@ -1058,11 +1072,23 @@ function setupSessionStart(
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	shellState: { ghAvailable: boolean },
 	setupFooter: (ctx: ExtensionContext) => void,
 	setupDashboard: (ctx: ExtensionContext) => void,
 ): void {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
+
+		// Detect gh CLI
+		try {
+			execSync("which gh", { stdio: "ignore", timeout: 3000 });
+			shellState.ghAvailable = true;
+		} catch {
+			shellState.ghAvailable = false;
+			if (_config.git.auto_pr) {
+				ctx.ui.notify("gh CLI not found — auto-PR disabled. Install GitHub CLI for PR creation.", "info");
+			}
+		}
 
 		// Lock to orchestrator-only tools (no codebase access)
 		pi.setActiveTools(["tilldone", "dispatch_agent", "answer", "git_status", "switch_key", "kill_agent"]);
@@ -1225,6 +1251,9 @@ export default function piShell(pi: ExtensionAPI) {
 	// --- State ---
 	const taskStore = createPersistentTaskStore();
 	const agentTracker = createAgentTracker();
+	const shellState = {
+		ghAvailable: false,
+	};
 
 	// --- Tools ---
 	registerTillDone(pi, taskStore);
@@ -1235,14 +1264,14 @@ export default function piShell(pi: ExtensionAPI) {
 	registerKillAgent(pi, agentTracker);
 
 	// --- UI ---
-	const setupFooter = registerFooter(pi, taskStore, agentTracker, config);
+	const setupFooter = registerFooter(pi, taskStore, agentTracker, config, shellState);
 	const setupDashboard = registerDashboard(pi, agentTracker);
 	registerStatusCommand(pi, taskStore);
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
 
 	// --- Events ---
-	setupSessionStart(pi, config, taskStore, agentTracker, setupFooter, setupDashboard);
+	setupSessionStart(pi, config, taskStore, agentTracker, shellState, setupFooter, setupDashboard);
 	setupBeforeAgentStart(pi, config);
 	setupAgentEnd(pi, taskStore);
 	setupShellPassthrough(pi, config);
