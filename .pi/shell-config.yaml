@@ -36,7 +36,7 @@ agent_timeouts:
 profiles:
   work:
     op: "op://Personal/murmur openrouter key/credential"
-    orchestrator_model: openrouter/moonshotai/kimi-k2.5
+    orchestrator_model: openrouter/deepseek/deepseek-v3.2
     agent_models:
       builder: openrouter/anthropic/claude-sonnet-4.6
     agent_fallbacks:
