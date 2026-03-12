@@ -47,7 +47,7 @@ import {
 } from "./pi-shell/dispatch-log.ts";
 import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
 import { executeParallelDispatch, formatParallelResults, type ParallelDispatchLeg } from "./pi-shell/parallel-dispatch.ts";
-import { buildScoutMemoryPrefix } from "./pi-shell/memory.ts";
+import { buildScoutMemoryPrefix, writeMemory } from "./pi-shell/memory.ts";
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
@@ -955,6 +955,39 @@ function registerKillAgent(pi: ExtensionAPI, _agentTracker: AgentTracker): void 
 			return new Text(
 				theme.fg("toolTitle", theme.bold("kill_agent ")) +
 				theme.fg("error", (args as any).agent || "?"),
+				0, 0,
+			);
+		},
+		renderResult(result, _options, _theme) {
+			const text = result.content[0];
+			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+		},
+	});
+}
+
+/** Register the remember tool for orchestrator long-term memory */
+function registerRemember(pi: ExtensionAPI): void {
+	const cwd = process.cwd();
+
+	pi.registerTool({
+		name: "remember",
+		label: "Remember",
+		description: "Save reusable knowledge to .pi/memory/ for future sessions. Use after scouts return structural findings worth caching.",
+		parameters: Type.Object({
+			topic: Type.String({ description: "Short kebab-case identifier (e.g. repo-layout, gateway-config)" }),
+			content: Type.String({ description: "Concise, factual knowledge to store" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { topic, content } = params as { topic: string; content: string };
+			const result = writeMemory(cwd, topic, content);
+			return {
+				content: [{ type: "text" as const, text: result }],
+			};
+		},
+		renderCall(args, theme) {
+			return new Text(
+				theme.fg("toolTitle", theme.bold("remember ")) +
+				theme.fg("accent", (args as any).topic || "?"),
 				0, 0,
 			);
 		},
@@ -2295,6 +2328,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerGitStatus(pi);
 	registerSwitchKeyCommand(pi, config, shellState);
 	registerKillAgent(pi, agentTracker);
+	registerRemember(pi);
 
 	// --- UI ---
 	const setupFooter = registerFooter(pi, taskStore, agentTracker, config, shellState);

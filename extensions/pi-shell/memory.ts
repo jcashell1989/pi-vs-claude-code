@@ -6,7 +6,7 @@
  * auto-injects memory context into scout dispatches.
  */
 
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -74,4 +74,54 @@ export function buildScoutMemoryPrefix(cwd: string): string {
   const ctx = buildMemoryContext(cwd);
   if (!ctx) return "";
   return ctx + "\n---\n\n";
+}
+
+/**
+ * Write or update a memory entry. Creates the topic file and updates the index.
+ * Returns a status message.
+ */
+export function writeMemory(cwd: string, topic: string, content: string): string {
+  const memDir = join(cwd, MEMORY_DIR);
+  if (!existsSync(memDir)) mkdirSync(memDir, { recursive: true });
+
+  // Sanitize topic to kebab-case filename
+  const safeTopic = topic.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  if (!safeTopic) return "Error: invalid topic name";
+
+  const filename = `${safeTopic}.md`;
+  const filePath = join(memDir, filename);
+  const isUpdate = existsSync(filePath);
+  const date = new Date().toISOString().split("T")[0];
+
+  // Write topic file with frontmatter
+  const fileContent = [
+    "---",
+    `topic: ${safeTopic}`,
+    `updated: ${date}`,
+    "agent: orchestrator",
+    "---",
+    "",
+    content.trim(),
+    "",
+  ].join("\n");
+
+  writeFileSync(filePath, fileContent);
+
+  // Update index if this is a new topic
+  if (!isUpdate) {
+    const indexPath = join(memDir, MEMORY_INDEX);
+    let index = existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : "# Agent Memory Index\n";
+
+    // Check if already listed (shouldn't be if !isUpdate, but be safe)
+    if (!index.includes(`[${filename}]`)) {
+      // Extract a one-line description from content (first non-empty line)
+      const firstLine = content.trim().split("\n")[0].slice(0, 80);
+      index = index.trimEnd() + `\n- [${filename}](${filename}) — ${firstLine}\n`;
+      writeFileSync(indexPath, index);
+    }
+  }
+
+  return isUpdate
+    ? `Updated memory: ${safeTopic} (${filePath})`
+    : `Saved new memory: ${safeTopic} (${filePath})`;
 }

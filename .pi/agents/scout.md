@@ -23,14 +23,6 @@ Never read or scan these:
 - `.pi/agent-sessions/`, `.pi/tasks/sessions/`, `.pi/worktrees/`
 - Any path matching `.pi/scout-ignore` patterns (if that file exists, read it first)
 
-## Saving Knowledge
-
-If you discover structural knowledge that would be useful for future scouts (repo layout, key entry points, config locations, service architecture), write it to `.pi/memory/`:
-1. Create or update `.pi/memory/<topic>.md` with a YAML frontmatter block (`topic`, `updated`, `agent: scout`) and concise content
-2. Update `.pi/memory/MEMORY.md` index if you added a new topic file
-
-Keep memory entries short and factual — structure, not commentary.
-
 ## Output
 
 End every response with a `## SUMMARY` section (max 300 words) capturing key findings in a structured format.
