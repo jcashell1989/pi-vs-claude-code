@@ -42,7 +42,7 @@ import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS,
 import {
 	logDispatch, generateDispatchId, markFollowUps,
 	findSimilarDispatches, formatInjectionContext,
-	formatAnalysisReport, formatModelScorecard, readLog,
+	formatAnalysisReport, formatModelScorecard, sanitizeLog, readLog,
 	OPERATION_TYPES, type OperationType,
 } from "./pi-shell/dispatch-log.ts";
 import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
@@ -1326,16 +1326,26 @@ function registerImproveAgentsCommand(
 	pi.registerCommand("improve-agents", {
 		description: "Analyze dispatch log and propose agent definition improvements",
 		handler: async (_args, _ctx) => {
+			// Sanitize corrupted entries first
+			const fixed = sanitizeLog(cwd);
+			if (fixed > 0) {
+				_ctx.ui.notify(`Sanitized ${fixed} corrupted dispatch log entries`, "info");
+			}
+
 			const entries = readLog(cwd);
-			if (entries.length < 5) {
-				_ctx.ui.notify(
-					`Only ${entries.length} dispatch log entries. Accumulate more data (10+ dispatches) for meaningful analysis.`,
-					"info",
-				);
+			if (entries.length === 0) {
+				_ctx.ui.notify("No dispatch log entries yet. Run some agents first.", "info");
 				return;
 			}
 
-			// Generate analysis report
+			// If too few entries, show the report directly without dispatching an agent
+			if (entries.length < 3) {
+				const report = formatAnalysisReport(cwd);
+				_ctx.ui.notify(`${report}\n\nAccumulate more dispatches for detailed improvement proposals.`, "info");
+				return;
+			}
+
+			// Generate analysis report (now includes model scorecard)
 			const report = formatAnalysisReport(cwd);
 
 			// Read current agent definitions (cwd first, fallback to pi-orchestrator root)
@@ -1356,35 +1366,47 @@ function registerImproveAgentsCommand(
 				? agentDefs.join("\n\n")
 				: "(No agent definitions found)";
 
+			// Model config context
+			const modelConfig = Object.entries(_shellState.agentModels)
+				.map(([role, model]) => `  ${role}: ${(model as string).split("/").pop()}`)
+				.join("\n");
+
 			// Dispatch analysis to a capable model
 			const analysisPrompt = [
-				"You are an expert at improving AI agent configurations. Analyze the following dispatch log data and current agent definitions, then propose specific improvements.",
+				"You are an expert at improving AI agent configurations. Analyze the dispatch log data, model performance, and current agent definitions. Propose specific improvements.",
 				"",
 				"## Dispatch Log Analysis",
 				report,
+				"",
+				"## Current Model Configuration",
+				modelConfig,
 				"",
 				"## Current Agent Definitions",
 				agentDefsText,
 				"",
 				"## Your Task",
-				"Based on the dispatch data, propose specific, concrete edits to the agent .md files. For each proposal:",
-				"1. State what you're changing and why (cite evidence from the log)",
+				"Produce a structured improvement report. For each proposal:",
+				"1. State what you're changing and why (cite evidence from the log data)",
 				"2. Show the exact edit (what to add/change/remove in which file)",
 				"3. Explain the expected improvement",
 				"",
-				"Focus on:",
-				"- System prompt improvements (add instructions that would prevent observed failures)",
-				"- Tool adjustments (add/remove tools based on what agents actually need)",
-				"- Model recommendations (if an agent's tasks are simple, suggest cheaper models)",
-				"- Agents with high follow-up rates (their prompts may need more specificity)",
+				"Cover these areas:",
+				"- **Model reliability**: Flag models with <80% success rate. Recommend replacements based on failure reasons (repetition, timeout, guardrail).",
+				"- **System prompt improvements**: Add instructions that would prevent observed failure patterns.",
+				"- **Timeout tuning**: If agents regularly time out, recommend higher timeouts. If they finish fast, recommend lower.",
+				"- **Tool adjustments**: Add/remove tools based on what agents actually need.",
+				"- **Cost optimization**: If an agent's tasks are simple, suggest cheaper models.",
+				"- **Follow-up rate**: Agents with high follow-up rates may need more specificity in their prompts.",
 				"",
 				"Be specific — not 'improve the prompt' but 'add this sentence to the system prompt'.",
+				"Prioritize proposals by impact: critical fixes first, then optimizations.",
 			].join("\n");
 
-			_ctx.ui.notify("Analyzing dispatch log and generating improvement proposals...", "info");
+			_ctx.ui.notify("Analyzing dispatch log and model performance...", "info");
 
 			try {
 				const model = _shellState.agentModels.reviewer || "openrouter/deepseek/deepseek-v3.2";
+				const fallbackModel = _shellState.agentFallbacks?.reviewer;
 				const timeout = _config.agent_timeouts.reviewer ?? 600;
 				const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 
@@ -1392,6 +1414,7 @@ function registerImproveAgentsCommand(
 					agent: "scout",
 					task: analysisPrompt,
 					model,
+					fallbackModel,
 					cwd,
 					agentDefsDir: PI_SHELL_ROOT,
 					timeout,
@@ -1407,15 +1430,23 @@ function registerImproveAgentsCommand(
 
 				if (result.output) {
 					_ctx.ui.notify(
-						`Agent Improvement Proposals\n\n${result.output}\n\n` +
-						`Cost: $${result.cost.toFixed(3)} | Review these proposals and apply manually to .pi/agents/*.md`,
+						`Agent Improvement Proposals ($${result.cost.toFixed(3)})\n\n${result.output}\n\n` +
+						`Review these proposals and apply manually to .pi/agents/*.md or shell-config.yaml`,
 						"info",
 					);
 				} else {
-					_ctx.ui.notify("Analysis completed but no proposals generated. Try again with more log data.", "info");
+					// Fall back to showing the raw report
+					_ctx.ui.notify(
+						`Analysis agent returned no output. Raw report:\n\n${report}`,
+						"info",
+					);
 				}
 			} catch (err: any) {
-				_ctx.ui.notify(`Error analyzing dispatch log: ${err?.message || err}`, "info");
+				// On error, still show the raw report
+				_ctx.ui.notify(
+					`Error dispatching analysis agent: ${err?.message || err}\n\nRaw report:\n\n${report}`,
+					"info",
+				);
 			}
 		},
 	});

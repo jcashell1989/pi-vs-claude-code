@@ -32,6 +32,8 @@ agent_timeouts:
   scout: 300
   builder: 900
   reviewer: 600
+  plan-reviewer: 600
+  red-team: 600
   answer: 120
 
 # Profiles — per-profile key + model overrides

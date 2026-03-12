@@ -329,10 +329,48 @@ export function formatAnalysisReport(cwd: string): string {
   if (failedEntries.length > 0) {
     lines.push("## Failure Patterns");
     for (const e of failedEntries.slice(-5)) {
-      lines.push(`  - [${e.agent}/${e.operation}] ${e.taskSummary}`);
+      const reason = e.failureReason ? ` (${e.failureReason})` : "";
+      const model = e.model ? ` [${e.model.split("/").pop()}]` : "";
+      lines.push(`  - [${e.agent}/${e.operation}]${model}${reason} ${e.taskSummary}`);
+    }
+    lines.push("");
+  }
+
+  // Model scorecard
+  const modelScores = getModelStats(cwd);
+  if (modelScores.length > 0) {
+    lines.push("## Model Performance");
+    for (const s of modelScores) {
+      const shortModel = s.model.split("/").pop() || s.model;
+      const rateStr = `${(s.successRate * 100).toFixed(0)}%`;
+      const reasons = Object.entries(s.failureBreakdown)
+        .map(([r, n]) => `${r}:${n}`)
+        .join(" ");
+      const reasonsStr = reasons ? ` — failures: ${reasons}` : "";
+      lines.push(`  ${shortModel}: ${rateStr} success (${s.total} dispatches, avg $${s.avgCost.toFixed(3)})${reasonsStr}`);
     }
     lines.push("");
   }
 
   return lines.join("\n");
+}
+
+/** Sanitize corrupted dispatch log entries (e.g. [object Object] costs) */
+export function sanitizeLog(cwd: string): number {
+  const logPath = getLogPath(cwd);
+  const entries = readLog(cwd);
+  if (entries.length === 0) return 0;
+
+  let fixed = 0;
+  for (const e of entries) {
+    if (typeof e.cost !== "number" || isNaN(e.cost)) {
+      e.cost = Number((e.cost as any)?.total ?? 0) || 0;
+      fixed++;
+    }
+  }
+
+  if (fixed > 0) {
+    writeFileSync(logPath, entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+  }
+  return fixed;
 }
