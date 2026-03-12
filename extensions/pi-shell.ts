@@ -66,6 +66,7 @@ interface AgentState {
 	timer?: ReturnType<typeof setInterval>;
 	groupId?: string;
 	groupType?: "fan_out" | "parallel_dispatch";
+	_key?: string;
 }
 
 interface AgentTracker {
@@ -93,13 +94,40 @@ interface AgentTracker {
 
 /** Create an in-memory tracker for subagent lifecycle and status */
 function createAgentTracker(): AgentTracker {
-	// Stub: will track spawned subagent processes and their states
 	const agents = new Map<string, AgentState>();
+	let _seq = 0;
+
+	/** Find agent by exact key first, then by name field (returns most recent match) */
+	const findByName = (name: string): AgentState | undefined => {
+		const lower = name.toLowerCase();
+		// Exact key match
+		const exact = agents.get(lower);
+		if (exact) return exact;
+		// Search by name field — return the most recent (last) match
+		let found: AgentState | undefined;
+		for (const a of agents.values()) {
+			if (a.name.toLowerCase() === lower || a._key === lower) found = a;
+		}
+		return found;
+	};
+
+	const findKeyByName = (name: string): string | undefined => {
+		const lower = name.toLowerCase();
+		if (agents.has(lower)) return lower;
+		let foundKey: string | undefined;
+		for (const [k, a] of agents.entries()) {
+			if (a.name.toLowerCase() === lower) foundKey = k;
+		}
+		return foundKey;
+	};
 
 	return {
 		getAll: () => Array.from(agents.values()),
-		get: (name) => agents.get(name.toLowerCase()),
+		get: (name) => findByName(name),
 		start: (name, task, taskId, pid, opts?: { groupId?: string; groupType?: AgentState["groupType"] }) => {
+			// Unique internal key — prevents clobbering when the same agent type
+			// is dispatched multiple times (e.g. two sequential scout calls)
+			const key = `${name.toLowerCase()}-${++_seq}`;
 			const state: AgentState = {
 				name,
 				status: "running",
@@ -112,22 +140,26 @@ function createAgentTracker(): AgentTracker {
 				pid,
 				groupId: opts?.groupId,
 				groupType: opts?.groupType,
+				_key: key,
 			};
-			agents.set(name.toLowerCase(), state);
+			agents.set(key, state);
 			return state;
 		},
 		update: (name, fields) => {
-			const state = agents.get(name.toLowerCase());
+			const state = findByName(name);
 			if (state) Object.assign(state, fields);
 		},
 		finish: (name, status) => {
-			const state = agents.get(name.toLowerCase());
+			const state = findByName(name);
 			if (state) {
 				state.status = status;
 				if (state.timer) clearInterval(state.timer);
 			}
 		},
-		remove: (name) => { agents.delete(name.toLowerCase()); },
+		remove: (name) => {
+			const key = findKeyByName(name);
+			if (key) agents.delete(key);
+		},
 		running: () => Array.from(agents.values()).filter((a) => a.status === "running"),
 		totalCost: () => Array.from(agents.values()).reduce((sum, a) => sum + a.cost, 0),
 	};
