@@ -37,6 +37,7 @@ import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/conf
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
 import { readFileSync, readdirSync } from "fs";
+import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
 
 // ── Type Definitions ───────────────────────────────────────────────────
@@ -577,9 +578,81 @@ function registerGitStatus(pi: ExtensionAPI): void {
 		description: "Check repository state: current branch, uncommitted changes, recent commits, task branches and PR status.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will run git commands and aggregate repo metadata
+			const opts = { encoding: "utf-8" as const, cwd: process.cwd() };
+			const lines: string[] = [];
+
+			// 1. Current branch
+			try {
+				const branch = execSync("git branch --show-current", opts).trim();
+				lines.push(`Branch: ${branch || "(detached HEAD)"}`);
+			} catch {
+				lines.push("Branch: (unable to determine)");
+			}
+
+			// 2. Uncommitted changes
+			try {
+				const porcelain = execSync("git status --porcelain", opts).trim();
+				if (!porcelain) {
+					lines.push("Changes: clean working tree");
+				} else {
+					const entries = porcelain.split("\n");
+					let modified = 0;
+					let added = 0;
+					let deleted = 0;
+					let untracked = 0;
+					let other = 0;
+					for (const entry of entries) {
+						const code = entry.substring(0, 2);
+						if (code === "??") untracked++;
+						else if (code.includes("M")) modified++;
+						else if (code.includes("A")) added++;
+						else if (code.includes("D")) deleted++;
+						else other++;
+					}
+					const parts: string[] = [];
+					if (modified) parts.push(`${modified} modified`);
+					if (added) parts.push(`${added} added`);
+					if (deleted) parts.push(`${deleted} deleted`);
+					if (untracked) parts.push(`${untracked} untracked`);
+					if (other) parts.push(`${other} other`);
+					lines.push(`Changes: ${entries.length} uncommitted (${parts.join(", ")})`);
+				}
+			} catch {
+				lines.push("Changes: (unable to determine)");
+			}
+
+			// 3. Recent commits
+			try {
+				const log = execSync("git log --oneline -5", opts).trim();
+				if (log) {
+					lines.push("Recent commits:");
+					for (const commit of log.split("\n")) {
+						lines.push(`  ${commit}`);
+					}
+				} else {
+					lines.push("Recent commits: (none)");
+				}
+			} catch {
+				lines.push("Recent commits: (unable to retrieve)");
+			}
+
+			// 4. Task branches
+			try {
+				const branches = execSync('git branch --list "task/*"', opts).trim();
+				if (branches) {
+					lines.push("Task branches:");
+					for (const b of branches.split("\n")) {
+						lines.push(`  ${b.trim()}`);
+					}
+				} else {
+					lines.push("Task branches: (none)");
+				}
+			} catch {
+				lines.push("Task branches: (unable to retrieve)");
+			}
+
 			return {
-				content: [{ type: "text" as const, text: "git_status stub — not yet implemented" }],
+				content: [{ type: "text" as const, text: lines.join("\n") }],
 			};
 		},
 		renderCall(_args, theme) {
@@ -606,9 +679,24 @@ function registerSwitchKey(pi: ExtensionAPI, _config: ShellConfig): void {
 			profile: Type.String({ description: "API key profile name from shell-config.yaml" }),
 		}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will swap env var and update active profile display
+			const { profile } = _params as { profile: string };
+			const profileConfig = (_config.api_keys as Record<string, any>)[profile];
+			if (!profileConfig || typeof profileConfig === "string") {
+				const available = Object.keys(_config.api_keys).filter((k) => k !== "default");
+				return {
+					content: [{ type: "text" as const, text: `Unknown profile '${profile}'. Available: ${available.join(", ")}` }],
+				};
+			}
+			const envVarName = profileConfig.env as string;
+			const value = process.env[envVarName];
+			if (!value) {
+				return {
+					content: [{ type: "text" as const, text: `Env var '${envVarName}' for profile '${profile}' is not set.` }],
+				};
+			}
+			process.env.OPENROUTER_API_KEY = value;
 			return {
-				content: [{ type: "text" as const, text: "switch_key stub — not yet implemented" }],
+				content: [{ type: "text" as const, text: `Switched to profile '${profile}' (env: ${envVarName})` }],
 			};
 		},
 		renderCall(args, theme) {
@@ -639,9 +727,36 @@ function registerKillAgent(pi: ExtensionAPI, _agentTracker: AgentTracker): void 
 			agent: Type.String({ description: "Name of the agent to kill" }),
 		}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			// Stub: will kill process, clean up tracker state
+			const { agent } = _params as { agent: string };
+			const state = _agentTracker.get(agent);
+
+			if (!state) {
+				const running = _agentTracker.running();
+				const names = running.map((a) => a.name).join(", ") || "none";
+				return {
+					content: [{ type: "text" as const, text: `Agent '${agent}' not found. Running agents: ${names}` }],
+				};
+			}
+
+			if (state.status !== "running") {
+				return {
+					content: [{ type: "text" as const, text: `Agent '${agent}' is already ${state.status}` }],
+				};
+			}
+
+			if (state.pid) {
+				try {
+					process.kill(state.pid, "SIGTERM");
+				} catch (err: any) {
+					// Process may have already exited
+				}
+			}
+
+			_agentTracker.finish(agent, "error");
+
+			const pidInfo = state.pid ? ` (pid: ${state.pid})` : "";
 			return {
-				content: [{ type: "text" as const, text: "kill_agent stub — not yet implemented" }],
+				content: [{ type: "text" as const, text: `Killed agent '${agent}'${pidInfo}` }],
 			};
 		},
 		renderCall(args, theme) {
