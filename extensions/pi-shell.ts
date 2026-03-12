@@ -29,7 +29,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Container, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
@@ -775,24 +776,181 @@ function registerKillAgent(pi: ExtensionAPI, _agentTracker: AgentTracker): void 
 
 // ── UI Registration Stubs ──────────────────────────────────────────────
 
-/** Register the unified footer showing cwd, branch, tasks, agents, cost, key profile */
+/** Build a footer setup closure. Call the returned function with ctx inside session_start. */
 function registerFooter(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 	_config: ShellConfig,
-): void {
-	// Will implement: composed footer renderer with all status components
-	// Components: cwd, git branch, task progress, active agents, session cost, api key profile
-	// Stub: registers a minimal placeholder footer on session_start via the pi event system
-	// (actual footer set in setupSessionStart for proper ctx access)
+): (ctx: ExtensionContext) => void {
+	let cachedBranch = "";
+	let branchLastRefresh = 0;
+	const BRANCH_CACHE_MS = 5000;
+
+	function getGitBranch(): string {
+		const now = Date.now();
+		if (cachedBranch && now - branchLastRefresh < BRANCH_CACHE_MS) return cachedBranch;
+		try {
+			cachedBranch = execSync("git branch --show-current", {
+				encoding: "utf-8",
+				cwd: process.cwd(),
+				timeout: 2000,
+			}).trim();
+		} catch {
+			cachedBranch = "";
+		}
+		branchLastRefresh = now;
+		return cachedBranch;
+	}
+
+	function shortenCwd(): string {
+		const cwd = process.cwd();
+		const home = process.env.HOME || process.env.USERPROFILE || "";
+		if (home && cwd.startsWith(home)) {
+			return "~" + cwd.slice(home.length);
+		}
+		return cwd;
+	}
+
+	return (ctx: ExtensionContext) => {
+		ctx.ui.setFooter((_tui, theme, _footerData) => ({
+			dispose: () => {},
+			invalidate() {},
+			render(width: number): string[] {
+				const sep = theme.fg("dim", "  ");
+
+				// cwd
+				const cwdStr = theme.fg("muted", ` ${shortenCwd()}`);
+
+				// git branch
+				const branch = getGitBranch();
+				const branchStr = branch
+					? sep + theme.fg("muted", ` ${branch}`)
+					: "";
+
+				// task progress: done/total checkmark
+				const tasks = _taskStore.getAll();
+				const doneCount = tasks.filter((t) => t.status === "done").length;
+				const taskStr = tasks.length > 0
+					? sep + theme.fg("dim", "tasks: ") +
+					  theme.fg("success", `${doneCount}`) +
+					  theme.fg("dim", `/${tasks.length} ✓`)
+					: "";
+
+				// active agents with status icons
+				const STATUS_ICON: Record<string, string> = {
+					running: "⟳",
+					done: "✓",
+					error: "✗",
+					idle: "◻",
+				};
+				const allAgents = _agentTracker.getAll();
+				const agentParts = allAgents
+					.filter((a) => a.status === "running" || a.status === "idle")
+					.map((a) => theme.fg("accent", `${a.name}${STATUS_ICON[a.status] || "◻"}`));
+				const agentStr = agentParts.length > 0
+					? sep + agentParts.join(" ")
+					: "";
+
+				// session cost
+				const totalCost = _agentTracker.totalCost();
+				const costStr = totalCost > 0
+					? sep + theme.fg("dim", `$${totalCost.toFixed(2)}`)
+					: "";
+
+				// api key profile
+				const profile = typeof _config.api_keys?.default === "string"
+					? _config.api_keys.default
+					: "";
+				const profileStr = profile
+					? sep + theme.fg("muted", profile)
+					: "";
+
+				const left = cwdStr + branchStr + taskStr + agentStr;
+				const right = costStr + profileStr + " ";
+				const pad = " ".repeat(
+					Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
+				);
+				return [truncateToWidth(left + pad + right, width)];
+			},
+		}));
+	};
 }
 
-/** Register the subagent dashboard widget showing agent cards */
-function registerDashboard(pi: ExtensionAPI, _agentTracker: AgentTracker): void {
-	// Will implement: card grid with DynamicBorder, real-time updates via timer
-	// Cards show: agent name, elapsed time, current work summary, context usage bar
-	// Cards appear/disappear as agents start/finish
+/** Build a dashboard widget setup closure. Call the returned function with ctx inside session_start. */
+function registerDashboard(_pi: ExtensionAPI, _agentTracker: AgentTracker): (ctx: ExtensionContext) => void {
+	return (ctx: ExtensionContext) => {
+		ctx.ui.setWidget("pi-shell-dashboard", (_tui, theme) => {
+			const container = new Container();
+			const borderFn = (s: string) => theme.fg("dim", s);
+
+			container.addChild(new Text("", 0, 0)); // top margin
+			container.addChild(new DynamicBorder(borderFn));
+			const content = new Text("", 1, 0);
+			container.addChild(content);
+			container.addChild(new DynamicBorder(borderFn));
+
+			return {
+				render(width: number): string[] {
+					const running = _agentTracker.running();
+					if (running.length === 0) {
+						// Hide widget when no agents are running
+						content.setText("");
+						return [];
+					}
+
+					const STATUS_ICON: Record<string, string> = {
+						running: "●",
+						done: "✓",
+						error: "✗",
+						idle: "◻",
+					};
+
+					const lines: string[] = [];
+					lines.push(
+						theme.fg("accent", ` Agents`) +
+						theme.fg("dim", ` (${running.length} running)`),
+					);
+
+					for (const agent of running) {
+						const icon = STATUS_ICON[agent.status] || "◻";
+						const statusColor = agent.status === "running" ? "accent"
+							: agent.status === "done" ? "success" : "error";
+						const elapsed = Math.round(agent.elapsed / 1000);
+						const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
+
+						// Task preview — truncate to fit
+						const maxTaskLen = Math.max(20, width - 30);
+						const taskPreview = agent.task.length > maxTaskLen
+							? agent.task.slice(0, maxTaskLen - 3) + "..."
+							: agent.task;
+
+						lines.push(
+							theme.fg(statusColor, `  ${icon} ${agent.name}`) +
+							theme.fg("dim", ` ${elapsed}s${costStr}`) +
+							theme.fg("muted", `  ${taskPreview}`),
+						);
+
+						// Last work line if available
+						if (agent.lastWork) {
+							const maxWorkLen = Math.max(20, width - 6);
+							const workPreview = agent.lastWork.length > maxWorkLen
+								? agent.lastWork.slice(0, maxWorkLen - 3) + "..."
+								: agent.lastWork;
+							lines.push(theme.fg("dim", `    ${workPreview}`));
+						}
+					}
+
+					content.setText(lines.join("\n"));
+					return container.render(width);
+				},
+				dispose() {},
+				invalidate() {
+					container.invalidate();
+				},
+			};
+		});
+	};
 }
 
 /** Register the /status command for cross-session task overview */
@@ -802,8 +960,24 @@ function registerStatusCommand(pi: ExtensionAPI, _taskStore: TaskStore): void {
 	pi.registerCommand("status", {
 		description: "Show pi-shell task overview",
 		handler: async (_args, _ctx) => {
-			// Stub: will render task list overlay
-			_ctx.ui.notify("status command — not yet implemented", "info");
+			const tasks = _taskStore.getAll();
+			if (tasks.length === 0) {
+				_ctx.ui.notify("No tasks yet", "info");
+				return;
+			}
+			const icons: Record<TaskStatus, string> = { idle: "○", inprogress: "●", done: "✓" };
+			const lines: string[] = [_taskStore.getTitle(), ""];
+			for (const t of tasks) {
+				let line = `${icons[t.status]} #${t.id} ${t.text}`;
+				if (t.branch) line += ` [${t.branch}]`;
+				if (t.cost > 0) line += ` $${t.cost.toFixed(3)}`;
+				lines.push(line);
+			}
+			const done = tasks.filter((t) => t.status === "done").length;
+			const total = tasks.length;
+			const totalCost = tasks.reduce((s, t) => s + t.cost, 0);
+			lines.push("", `${done}/${total} done, $${totalCost.toFixed(3)} total cost`);
+			_ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 }
@@ -815,8 +989,33 @@ function registerKillCommand(pi: ExtensionAPI, _agentTracker: AgentTracker): voi
 	pi.registerCommand("kill", {
 		description: "Kill a running subagent",
 		handler: async (_args, _ctx) => {
-			// Stub: will show select dialog of running agents
-			_ctx.ui.notify("kill command — not yet implemented", "info");
+			const name = _args?.trim();
+			if (name) {
+				const state = _agentTracker.get(name);
+				if (!state) {
+					_ctx.ui.notify(`No agent named "${name}"`, "info");
+					return;
+				}
+				if (state.status !== "running" || !state.pid) {
+					_ctx.ui.notify(`Agent "${name}" is not running`, "info");
+					return;
+				}
+				try {
+					process.kill(state.pid, "SIGTERM");
+				} catch {
+					// process may already be gone
+				}
+				_agentTracker.finish(name, "error");
+				_ctx.ui.notify(`Killed agent "${name}" (pid ${state.pid})`, "info");
+				return;
+			}
+			const running = _agentTracker.running();
+			if (running.length === 0) {
+				_ctx.ui.notify("No agents currently running", "info");
+				return;
+			}
+			const list = running.map((a) => `${a.name} (pid ${a.pid})`).join(", ");
+			_ctx.ui.notify(`Running agents: ${list}. Use /kill <name>`, "info");
 		},
 	});
 }
@@ -828,25 +1027,40 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("help", {
 		description: "Show pi-shell help and usage guide",
 		handler: async (_args, _ctx) => {
-			// Stub: will render help overlay
-			_ctx.ui.notify("help command — not yet implemented", "info");
+			const help = [
+				"Pi-Shell — Agent-Forward Orchestrator",
+				"",
+				"Commands:",
+				"  /status    — Task overview",
+				"  /kill      — Cancel running agent",
+				"  /help      — This help",
+				"",
+				"Tools (used by orchestrator):",
+				"  tilldone        — Task management (add, toggle, list, remove, update)",
+				"  dispatch_agent  — Send work to specialist subagent",
+				"  answer          — Quick read-only question",
+				"  git_status      — Repository state",
+				"  switch_key      — Switch API key profile",
+				"  kill_agent      — Cancel running agent",
+				"",
+				"Shell: Use ! or !! prefix for shell commands",
+			].join("\n");
+			_ctx.ui.notify(help, "info");
 		},
 	});
 }
 
 // ── Event Setup Stubs ──────────────────────────────────────────────────
 
-/** Set up session_start: lock down tools, set model, load config */
+/** Set up session_start: lock down tools, set model, load config, wire up footer and dashboard */
 function setupSessionStart(
 	pi: ExtensionAPI,
 	_config: ShellConfig,
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
+	setupFooter: (ctx: ExtensionContext) => void,
+	setupDashboard: (ctx: ExtensionContext) => void,
 ): void {
-	// Will implement: setActiveTools (tilldone, dispatch_agent, answer, git_status,
-	// switch_key, kill_agent — NO codebase tools), set orchestrator model,
-	// load TaskStore from disk, initialize footer and dashboard
-
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 
@@ -855,7 +1069,9 @@ function setupSessionStart(
 
 		// TaskStore loads from disk on creation — no explicit load needed
 
-		// Stub: will set up footer and dashboard rendering
+		// Wire up footer and dashboard now that ctx is available
+		setupFooter(ctx);
+		setupDashboard(ctx);
 	});
 }
 
@@ -979,14 +1195,14 @@ export default function piShell(pi: ExtensionAPI) {
 	registerKillAgent(pi, agentTracker);
 
 	// --- UI ---
-	registerFooter(pi, taskStore, agentTracker, config);
-	registerDashboard(pi, agentTracker);
+	const setupFooter = registerFooter(pi, taskStore, agentTracker, config);
+	const setupDashboard = registerDashboard(pi, agentTracker);
 	registerStatusCommand(pi, taskStore);
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
 
 	// --- Events ---
-	setupSessionStart(pi, config, taskStore, agentTracker);
+	setupSessionStart(pi, config, taskStore, agentTracker, setupFooter, setupDashboard);
 	setupBeforeAgentStart(pi, config);
 	setupAgentEnd(pi, taskStore);
 	setupShellPassthrough(pi, config);
