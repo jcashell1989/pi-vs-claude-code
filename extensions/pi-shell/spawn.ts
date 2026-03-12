@@ -18,6 +18,7 @@ export interface SpawnOptions {
 	agent: string;           // agent name (maps to .pi/agents/<name>.md)
 	task: string;            // task prompt for the subagent
 	model?: string;          // model override (from config agent_models)
+	fallbackModel?: string;  // fallback model if primary fails (404/guardrail)
 	branch?: string;         // git branch to work on (dispatch_agent passes this)
 	cwd: string;             // working directory
 	timeout: number;         // max runtime in seconds
@@ -100,7 +101,30 @@ function checkoutPreviousBranch(cwd: string): void {
 
 // ── Main Spawn Function ───────────────────────────────────────────────
 
+/** Detect if a spawn result failed due to provider guardrails / 404 */
+function isGuardrailFailure(result: SpawnResult): boolean {
+	return result.exitCode !== 0 &&
+		/No endpoints available|guardrail restrictions|data policy/i.test(result.output);
+}
+
 export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult> {
+	const result = await spawnSubagentCore(options);
+
+	// Fallback: if primary model hit a guardrail error and fallback is configured, retry
+	if (isGuardrailFailure(result) && options.fallbackModel && options.fallbackModel !== options.model) {
+		if (options.onUpdate) {
+			options.onUpdate({
+				type: "text_delta",
+				content: `\n[Fallback] Primary model blocked, retrying with ${options.fallbackModel.split("/").pop()}...\n`,
+			});
+		}
+		return spawnSubagentCore({ ...options, model: options.fallbackModel, fallbackModel: undefined });
+	}
+
+	return result;
+}
+
+async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 	const {
 		agent,
 		task,

@@ -392,11 +392,15 @@ function registerDispatch(
 				markFollowUps(cwd, taskId, dispatchId);
 			}
 
+			// Resolve fallback model from config
+			const fallbackModel = _config.agent_fallbacks?.[agent.toLowerCase()];
+
 			try {
 				const result = await spawnSubagent({
 					agent,
 					task,
 					model,
+					fallbackModel,
 					branch: targetBranch,
 					cwd,
 					timeout,
@@ -559,12 +563,15 @@ function registerAnswer(
 			const timeout = _config.agent_timeouts.answer ?? 120;
 			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 
+			const answerFallback = _config.agent_fallbacks?.answer;
+
 			try {
 				// 2. Spawn read-only scout subagent
 				const result = await spawnSubagent({
 					agent: "scout",
 					task: `Answer the following question about the codebase: ${question}`,
 					model,
+					fallbackModel: answerFallback,
 					cwd,
 					timeout,
 					maxResultTokens,
@@ -885,6 +892,7 @@ function registerFanOut(
 			const activeTask = _taskStore.getActive();
 			const taskId = activeTask?.id ?? 0;
 			const model = _config.agent_models[agent.toLowerCase()];
+			const fallbackModel = _config.agent_fallbacks?.[agent.toLowerCase()];
 			const timeout = _config.agent_timeouts[agent.toLowerCase()] ?? 300;
 			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
 			const costCeiling = _config.fan_out.cost_ceiling;
@@ -918,6 +926,7 @@ function registerFanOut(
 					dispatches,
 					cwd,
 					model,
+					fallbackModel,
 					timeout,
 					maxResultTokens,
 					sessionDir,

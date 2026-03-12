@@ -17,6 +17,7 @@ export interface ShellConfig {
     max_matches: number;
   };
   agent_models: Record<string, string>;
+  agent_fallbacks: Record<string, string>;
   agent_timeouts: Record<string, number>;
   api_keys: Record<string, { env: string }> & { default: string };
   interactive_commands: string[];
@@ -43,12 +44,20 @@ const DEFAULT_CONFIG: ShellConfig = {
     max_matches: 3,
   },
   agent_models: {
-    scout: "openrouter/google/gemini-2.5-flash",
-    planner: "openrouter/google/gemini-2.5-flash",
-    builder: "openrouter/anthropic/claude-sonnet-4",
-    reviewer: "openrouter/anthropic/claude-sonnet-4",
-    "red-team": "openrouter/anthropic/claude-sonnet-4",
-    answer: "openrouter/google/gemini-2.5-flash",
+    scout: "openrouter/nousresearch/hermes-4-70b",
+    planner: "openrouter/nousresearch/hermes-4-70b",
+    builder: "openrouter/deepseek/deepseek-v3.2",
+    reviewer: "openrouter/nousresearch/hermes-4-70b",
+    "red-team": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
+    answer: "openrouter/mistralai/mistral-nemo",
+  },
+  agent_fallbacks: {
+    scout: "openrouter/mistralai/mistral-nemo",
+    planner: "openrouter/deepseek/deepseek-chat-v3.1",
+    builder: "openrouter/nousresearch/hermes-4-70b",
+    reviewer: "openrouter/deepseek/deepseek-chat",
+    "red-team": "openrouter/nousresearch/hermes-4-70b",
+    answer: "openrouter/nousresearch/hermes-4-70b",
   },
   agent_timeouts: {
     scout: 300,

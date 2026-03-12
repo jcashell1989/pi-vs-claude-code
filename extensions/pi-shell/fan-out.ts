@@ -28,6 +28,7 @@ export interface FanOutOptions {
   dispatches: FanOutDispatch[];
   cwd: string;
   model?: string;
+  fallbackModel?: string;
   timeout: number;
   maxResultTokens: number;
   sessionDir: string;
@@ -109,6 +110,7 @@ export async function executeFanOut(options: FanOutOptions): Promise<FanOutResul
       agent,
       task: augmentedTask,
       model,
+      fallbackModel: options.fallbackModel,
       cwd,
       timeout: perAgentTimeout,
       maxResultTokens,
