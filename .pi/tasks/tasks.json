@@ -1,0 +1,16 @@
+{
+  "nextId": 2,
+  "listTitle": "Documentation updates",
+  "tasks": [
+    {
+      "id": 1,
+      "text": "Show me the task-store code, focusing on error handling, file operations, concurrency issues, and potential bugs. Include the full implementation.",
+      "status": "done",
+      "branch": null,
+      "pr": null,
+      "created": "2026-03-12T06:01:26.842Z",
+      "completed": "2026-03-12T06:01:53.863Z",
+      "cost": 0
+    }
+  ]
+}
