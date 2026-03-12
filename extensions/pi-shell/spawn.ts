@@ -118,15 +118,23 @@ function isGuardrailFailure(result: SpawnResult): boolean {
 		/No endpoints available|guardrail restrictions|data policy/i.test(result.output);
 }
 
+/** Detect if a spawn was killed due to degenerate repetition */
+function isRepetitionKill(result: SpawnResult): boolean {
+	return result.exitCode !== 0 &&
+		/degenerate repetition detected/i.test(result.output);
+}
+
 export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult> {
 	const result = await spawnSubagentCore(options);
 
-	// Fallback: if primary model hit a guardrail error and fallback is configured, retry
-	if (isGuardrailFailure(result) && options.fallbackModel && options.fallbackModel !== options.model) {
+	// Fallback: if primary model hit a guardrail or degenerate loop, retry with fallback
+	const shouldFallback = isGuardrailFailure(result) || isRepetitionKill(result);
+	if (shouldFallback && options.fallbackModel && options.fallbackModel !== options.model) {
+		const reason = isRepetitionKill(result) ? "degenerate output" : "blocked";
 		if (options.onUpdate) {
 			options.onUpdate({
 				type: "text_delta",
-				content: `\n[Fallback] Primary model blocked, retrying with ${options.fallbackModel.split("/").pop()}...\n`,
+				content: `\n[Fallback] Primary model ${reason}, retrying with ${options.fallbackModel.split("/").pop()}...\n`,
 			});
 		}
 		return spawnSubagentCore({ ...options, model: options.fallbackModel, fallbackModel: undefined });
@@ -206,6 +214,28 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 	let conflictDetected = false;
 	const textChunks: string[] = [];
 
+	// Repetition detection — kill agent if output degenerates into a loop
+	let repWindow = "";           // sliding window of recent output
+	const REP_WINDOW_SIZE = 200;  // chars to track
+	const REP_THRESHOLD = 0.85;   // ratio of most-common char to trigger kill
+	const REP_MIN_CHARS = 100;    // minimum chars before checking
+	let repCharCount = 0;
+
+	function isDegenerate(): boolean {
+		if (repCharCount < REP_MIN_CHARS) return false;
+		// Count frequency of each non-whitespace char in window
+		const freq = new Map<string, number>();
+		let total = 0;
+		for (const ch of repWindow) {
+			if (ch === " " || ch === "\n") continue;
+			freq.set(ch, (freq.get(ch) || 0) + 1);
+			total++;
+		}
+		if (total < REP_MIN_CHARS / 2) return false;
+		const maxFreq = Math.max(...freq.values());
+		return maxFreq / total >= REP_THRESHOLD;
+	}
+
 	return new Promise<SpawnResult>((resolve) => {
 		const proc = spawn("pi", args, {
 			cwd,
@@ -263,6 +293,22 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 						if (!conflictDetected && /conflict|merge conflict/i.test(text)) {
 							conflictDetected = true;
 						}
+
+						// Track repetition window
+						repWindow += text;
+						repCharCount += text.length;
+						if (repWindow.length > REP_WINDOW_SIZE) {
+							repWindow = repWindow.slice(-REP_WINDOW_SIZE);
+						}
+						if (!killed && isDegenerate()) {
+							killed = true;
+							textChunks.push("\n\n[Killed: degenerate repetition detected]");
+							proc.kill("SIGTERM");
+							setTimeout(() => {
+								try { proc.kill("SIGKILL"); } catch {}
+							}, 2000);
+						}
+
 						if (onUpdate) {
 							onUpdate({ type: "text_delta", content: text });
 						}
