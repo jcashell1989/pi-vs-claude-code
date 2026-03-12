@@ -246,7 +246,7 @@ export function createTaskStore(cwd?: string): TaskStore {
 
 		addCost(id: number, amount: number): void {
 			const task = findTask(id);
-			task.cost += amount;
+			task.cost = Math.round((task.cost + amount) * 1e6) / 1e6;
 			save();
 		},
 
