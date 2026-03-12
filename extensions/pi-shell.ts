@@ -1218,7 +1218,7 @@ function setupShellPassthrough(pi: ExtensionAPI, _config: ShellConfig): void {
 		if (baseCmd && _config.interactive_commands.includes(baseCmd)) {
 			if (!process.env.TMUX) {
 				_ctx.ui.notify(
-					`"${baseCmd}" is interactive. For best results, run pi-shell inside tmux.`,
+					`"${baseCmd}" is interactive and may garble the TUI. Run pi-shell inside tmux, or use a separate terminal.`,
 					"info",
 				);
 			}
