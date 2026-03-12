@@ -26,10 +26,9 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, matchesKey, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { TASK_STATUS_ICON, type TaskStatus } from "./pi-shell/constants.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
-
-type TaskStatus = "idle" | "inprogress" | "done";
 
 interface Task {
 	id: number;
@@ -56,7 +55,6 @@ const TillDoneParams = Type.Object({
 
 // ── Status helpers ─────────────────────────────────────────────────────
 
-const STATUS_ICON: Record<TaskStatus, string> = { idle: "○", inprogress: "●", done: "✓" };
 const NEXT_STATUS: Record<TaskStatus, TaskStatus> = { idle: "inprogress", inprogress: "done", done: "idle" };
 const STATUS_LABEL: Record<TaskStatus, string> = { idle: "idle", inprogress: "in progress", done: "done" };
 
@@ -125,10 +123,10 @@ class TillDoneListComponent {
 
 			for (const task of this.tasks) {
 				const icon = task.status === "done"
-					? th.fg("success", STATUS_ICON.done)
+					? th.fg("success", TASK_STATUS_ICON.done)
 					: task.status === "inprogress"
-						? th.fg("accent", STATUS_ICON.inprogress)
-						: th.fg("dim", STATUS_ICON.idle);
+						? th.fg("accent", TASK_STATUS_ICON.inprogress)
+						: th.fg("dim", TASK_STATUS_ICON.idle);
 				const id = th.fg("accent", `#${task.id}`);
 				const text = task.status === "done"
 					? th.fg("dim", task.text)
@@ -243,11 +241,11 @@ export default function (pi: ExtensionAPI) {
 
 					const l1Right = total === 0
 						? ""
-						: theme.fg("dim", STATUS_ICON.idle + " ") + theme.fg("muted", `${idle}`) +
+						: theme.fg("dim", TASK_STATUS_ICON.idle + " ") + theme.fg("muted", `${idle}`) +
 							theme.fg("dim", "  ") +
-							theme.fg("accent", STATUS_ICON.inprogress + " ") + theme.fg("accent", `${active}`) +
+							theme.fg("accent", TASK_STATUS_ICON.inprogress + " ") + theme.fg("accent", `${active}`) +
 							theme.fg("dim", "  ") +
-							theme.fg("success", STATUS_ICON.done + " ") + theme.fg("success", `${done}`) +
+							theme.fg("success", TASK_STATUS_ICON.done + " ") + theme.fg("success", `${done}`) +
 							theme.fg("dim", " ");
 
 					const pad1 = " ".repeat(Math.max(1, width - visibleWidth(l1Left) - visibleWidth(l1Right)));
@@ -263,8 +261,8 @@ export default function (pi: ExtensionAPI) {
 
 					const rows = visible.map((t) => {
 						const icon = t.status === "done"
-							? theme.fg("success", STATUS_ICON.done)
-							: theme.fg("accent", STATUS_ICON.inprogress);
+							? theme.fg("success", TASK_STATUS_ICON.done)
+							: theme.fg("accent", TASK_STATUS_ICON.inprogress);
 						const text = t.status === "done"
 							? theme.fg("dim", t.text)
 							: theme.fg("success", t.text);

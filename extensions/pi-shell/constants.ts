@@ -50,6 +50,7 @@ export const ORCHESTRATOR_TOOLS = [
 	"tilldone",
 	"dispatch_agent",
 	"fan_out",
+	"parallel_dispatch",
 	"answer",
 	"git_status",
 	"kill_agent"
