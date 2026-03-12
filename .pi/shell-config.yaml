@@ -15,8 +15,8 @@ context_injection:
 agent_models:
   scout: openrouter/xiaomi/mimo-v2-flash
   builder: openrouter/deepseek/deepseek-v3.2
-  reviewer: openrouter/xiaomi/mimo-v2-flash
-  red-team: openrouter/xiaomi/mimo-v2-flash
+  reviewer: openrouter/deepseek/deepseek-v3.2
+  red-team: openrouter/deepseek/deepseek-v3.2
   answer: openrouter/nvidia/nemotron-3-nano-30b-a3b:free
 
 agent_fallbacks:
