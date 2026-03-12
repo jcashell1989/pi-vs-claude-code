@@ -31,7 +31,7 @@ export interface ShellConfig {
 
 const DEFAULT_CONFIG: ShellConfig = {
   orchestrator: {
-    model: "openrouter/minimax/minimax-m2.5",
+    model: "openrouter/nousresearch/hermes-4-70b",
     max_dispatch_result_tokens: 8000,
     compaction_summary: true,
   },
