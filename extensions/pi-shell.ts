@@ -42,7 +42,7 @@ import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS,
 import {
 	logDispatch, generateDispatchId, markFollowUps,
 	findSimilarDispatches, formatInjectionContext,
-	formatAnalysisReport, readLog,
+	formatAnalysisReport, formatModelScorecard, readLog,
 	OPERATION_TYPES, type OperationType,
 } from "./pi-shell/dispatch-log.ts";
 import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
@@ -514,6 +514,8 @@ function registerDispatch(
 					parentTaskId: taskId,
 					followUpNeeded: false,
 					fanOutGroupId: null,
+					failureReason: result.failureReason || null,
+					fellBack: result.fellBack || false,
 				});
 
 				const summary = `[${agent}] ${status} in ${Math.round(result.elapsed / 1000)}s` +
@@ -667,6 +669,8 @@ function registerAnswer(
 					parentTaskId: task.id,
 					followUpNeeded: false,
 					fanOutGroupId: null,
+					failureReason: result.failureReason || null,
+					fellBack: result.fellBack || false,
 				});
 
 				return {
@@ -1751,6 +1755,7 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 				"Commands:",
 				"  /status       Task overview with costs",
 				"  /kill [name]  Cancel a running agent",
+				"  /models       Model performance scorecard",
 				"  /help         This guide",
 				"",
 				"Shortcuts:",
@@ -1777,6 +1782,18 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 				"  - Tasks persist to .pi/tasks/tasks.json (survives restarts)",
 			].join("\n");
 			_ctx.ui.notify(help, "info");
+		},
+	});
+}
+
+/** Register the /models command for model performance scorecard */
+function registerModelsCommand(pi: ExtensionAPI): void {
+	pi.registerCommand("models", {
+		description: "Show model performance scorecard",
+		handler: async (_args, _ctx) => {
+			const cwd = process.cwd();
+			const scorecard = formatModelScorecard(cwd);
+			_ctx.ui.notify(scorecard, "info");
 		},
 	});
 }
@@ -2232,6 +2249,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerStatusCommand(pi, taskStore);
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
+	registerModelsCommand(pi);
 	registerImproveAgentsCommand(pi, config, taskStore, agentTracker, shellState);
 
 	// --- Shortcuts ---

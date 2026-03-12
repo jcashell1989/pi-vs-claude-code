@@ -8,6 +8,11 @@ export const OPERATION_TYPES = [
 ] as const;
 export type OperationType = typeof OPERATION_TYPES[number];
 
+export const FAILURE_REASONS = [
+  "timeout", "guardrail", "repetition", "not_found", "checkout_failed", "conflict", "error"
+] as const;
+export type FailureReason = typeof FAILURE_REASONS[number];
+
 export interface DispatchLogEntry {
   id: string;
   timestamp: string;
@@ -24,6 +29,8 @@ export interface DispatchLogEntry {
   parentTaskId: number;
   followUpNeeded: boolean;
   fanOutGroupId: string | null;
+  failureReason?: FailureReason | null;
+  fellBack?: boolean;  // true if fallback model was used after primary failed
 }
 
 // ── Dispatch Log ───────────────────────────────────────────────────────
@@ -190,6 +197,97 @@ export function getAgentStats(cwd: string): AgentStats[] {
   }
 
   return stats.sort((a, b) => b.total - a.total);
+}
+
+// ── Model Scorecard ─────────────────────────────────────────────────────
+
+export interface ModelScore {
+  model: string;
+  total: number;
+  successes: number;
+  failures: number;
+  successRate: number;
+  avgCost: number;
+  avgElapsed: number;
+  failureBreakdown: Partial<Record<FailureReason, number>>;
+  agents: string[];  // which agent roles used this model
+  fellBackCount: number;  // times this model caused a fallback
+}
+
+/** Compute per-model statistics from the dispatch log */
+export function getModelStats(cwd: string): ModelScore[] {
+  const entries = readLog(cwd);
+  if (entries.length === 0) return [];
+
+  const byModel = new Map<string, DispatchLogEntry[]>();
+  for (const e of entries) {
+    const model = e.model || "unknown";
+    const list = byModel.get(model) || [];
+    list.push(e);
+    byModel.set(model, list);
+  }
+
+  const scores: ModelScore[] = [];
+  for (const [model, modelEntries] of byModel) {
+    const total = modelEntries.length;
+    const successes = modelEntries.filter(e => e.outcome === "success").length;
+    const failures = total - successes;
+    const totalCost = modelEntries.reduce((s, e) => s + e.cost, 0);
+    const totalElapsed = modelEntries.reduce((s, e) => s + e.elapsed, 0);
+    const agents = [...new Set(modelEntries.map(e => e.agent))];
+    const fellBackCount = modelEntries.filter(e => e.fellBack).length;
+
+    const failureBreakdown: Partial<Record<FailureReason, number>> = {};
+    for (const e of modelEntries) {
+      if (e.failureReason) {
+        failureBreakdown[e.failureReason] = (failureBreakdown[e.failureReason] || 0) + 1;
+      }
+    }
+
+    scores.push({
+      model,
+      total,
+      successes,
+      failures,
+      successRate: total > 0 ? successes / total : 0,
+      avgCost: total > 0 ? totalCost / total : 0,
+      avgElapsed: total > 0 ? totalElapsed / total : 0,
+      failureBreakdown,
+      agents,
+      fellBackCount,
+    });
+  }
+
+  return scores.sort((a, b) => b.total - a.total);
+}
+
+/** Format model scorecard for /models command */
+export function formatModelScorecard(cwd: string): string {
+  const scores = getModelStats(cwd);
+  if (scores.length === 0) return "No dispatch data yet. Run some agents to build model scores.";
+
+  const lines: string[] = ["Model Scorecard", ""];
+
+  for (const s of scores) {
+    const shortModel = s.model.split("/").pop() || s.model;
+    const rateStr = `${(s.successRate * 100).toFixed(0)}%`;
+    const rateIcon = s.successRate >= 0.9 ? "●" : s.successRate >= 0.7 ? "◐" : "○";
+    lines.push(`${rateIcon} ${shortModel}  ${rateStr} success  (${s.total} dispatches)`);
+    lines.push(`  agents: ${s.agents.join(", ")}  avg: $${s.avgCost.toFixed(3)} / ${Math.round(s.avgElapsed / 1000)}s`);
+
+    if (Object.keys(s.failureBreakdown).length > 0) {
+      const reasons = Object.entries(s.failureBreakdown)
+        .map(([r, n]) => `${r}:${n}`)
+        .join("  ");
+      lines.push(`  failures: ${reasons}`);
+    }
+    if (s.fellBackCount > 0) {
+      lines.push(`  fell back ${s.fellBackCount}× (primary model failed, used fallback)`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
 
 /** Format a full analysis report for /improve-agents */

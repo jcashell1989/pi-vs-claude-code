@@ -192,6 +192,8 @@ export async function executeParallelDispatch(options: ParallelDispatchOptions):
 			parentTaskId: taskId,
 			followUpNeeded: false,
 			fanOutGroupId: groupId,
+			failureReason: result.failureReason || null,
+			fellBack: result.fellBack || false,
 		});
 
 		return {

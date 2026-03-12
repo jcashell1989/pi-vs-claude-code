@@ -152,6 +152,8 @@ export async function executeFanOut(options: FanOutOptions): Promise<FanOutResul
       parentTaskId,
       followUpNeeded: false,
       fanOutGroupId,
+      failureReason: result.failureReason || null,
+      fellBack: result.fellBack || false,
     });
 
     const summary = extractSummary(result.output);

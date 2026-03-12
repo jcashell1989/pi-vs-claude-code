@@ -31,6 +31,8 @@ export interface SpawnOptions {
 	onCostUpdate?: (cost: number) => void;  // cost extracted from message_end events
 }
 
+export type SpawnFailureReason = "timeout" | "guardrail" | "repetition" | "error" | null;
+
 export interface SpawnResult {
 	output: string;   // truncated subagent output
 	exitCode: number;
@@ -38,6 +40,8 @@ export interface SpawnResult {
 	elapsed: number;  // milliseconds
 	conflict: boolean;
 	actualBranch?: string;
+	failureReason: SpawnFailureReason;
+	fellBack: boolean;  // true if fallback model was used
 }
 
 // ── Agent Definition Parser ────────────────────────────────────────────
@@ -127,17 +131,27 @@ function isRepetitionKill(result: SpawnResult): boolean {
 export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult> {
 	const result = await spawnSubagentCore(options);
 
+	// Classify failure reason
+	if (result.exitCode !== 0 && !result.failureReason) {
+		if (isRepetitionKill(result)) result.failureReason = "repetition";
+		else if (isGuardrailFailure(result)) result.failureReason = "guardrail";
+		else if (result.exitCode === 124) result.failureReason = "timeout";
+		else result.failureReason = "error";
+	}
+
 	// Fallback: if primary model hit a guardrail or degenerate loop, retry with fallback
-	const shouldFallback = isGuardrailFailure(result) || isRepetitionKill(result);
+	const shouldFallback = result.failureReason === "guardrail" || result.failureReason === "repetition";
 	if (shouldFallback && options.fallbackModel && options.fallbackModel !== options.model) {
-		const reason = isRepetitionKill(result) ? "degenerate output" : "blocked";
+		const reason = result.failureReason === "repetition" ? "degenerate output" : "blocked";
 		if (options.onUpdate) {
 			options.onUpdate({
 				type: "text_delta",
 				content: `\n[Fallback] Primary model ${reason}, retrying with ${options.fallbackModel.split("/").pop()}...\n`,
 			});
 		}
-		return spawnSubagentCore({ ...options, model: options.fallbackModel, fallbackModel: undefined });
+		const fallbackResult = await spawnSubagentCore({ ...options, model: options.fallbackModel, fallbackModel: undefined });
+		fallbackResult.fellBack = true;
+		return fallbackResult;
 	}
 
 	return result;
@@ -168,6 +182,8 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 			cost: 0,
 			elapsed: 0,
 			conflict: false,
+			failureReason: "not_found" as any,
+			fellBack: false,
 		};
 	}
 
@@ -189,6 +205,8 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 				cost: 0,
 				elapsed: 0,
 				conflict: false,
+				failureReason: "checkout_failed" as any,
+				fellBack: false,
 			};
 		}
 	}
@@ -409,6 +427,8 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 				elapsed,
 				conflict: conflictDetected,
 				actualBranch,
+				failureReason: null,  // classified by spawnSubagent wrapper
+				fellBack: false,
 			});
 		});
 
@@ -430,6 +450,8 @@ async function spawnSubagentCore(options: SpawnOptions): Promise<SpawnResult> {
 				elapsed: Date.now() - startTime,
 				conflict: conflictDetected,
 				actualBranch,
+				failureReason: "error",
+				fellBack: false,
 			});
 		});
 	});
