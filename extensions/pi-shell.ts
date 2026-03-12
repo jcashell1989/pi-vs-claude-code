@@ -1724,7 +1724,7 @@ function registerHelpCommand(pi: ExtensionAPI): void {
 				"Shortcuts:",
 				"  F2            Agent dashboard overlay",
 				"  F3            Kill agent (picker if multiple)",
-				"  Ctrl+X        Quick-kill most recent agent",
+				"  F4            Quick-kill most recent agent",
 				"",
 				"Shell:",
 				"  !<cmd>        Run a shell command (e.g. !ls, !git log)",
@@ -2139,8 +2139,8 @@ function registerShortcuts(
 		},
 	});
 
-	// Ctrl+X — Quick-kill: abort most recently started agent
-	pi.registerShortcut("ctrl+x", {
+	// F4 — Quick-kill: abort most recently started agent
+	pi.registerShortcut("f4", {
 		description: "Quick-kill most recent agent",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
@@ -2156,7 +2156,7 @@ function registerShortcuts(
 				try { process.kill(agent.pid, "SIGTERM"); } catch {}
 			}
 			_agentTracker.finish(agent.name, "error");
-			ctx.ui.notify(`Killed ${agent.name} (ctrl+x)`, "info");
+			ctx.ui.notify(`Killed ${agent.name} (F4)`, "info");
 		},
 	});
 }
