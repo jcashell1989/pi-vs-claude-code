@@ -4,6 +4,7 @@ import * as path from "path";
 
 export interface ProfileConfig {
   op: string;
+  orchestrator_model?: string;
   agent_models?: Record<string, string>;
   agent_fallbacks?: Record<string, string>;
 }
@@ -37,7 +38,7 @@ export interface ShellConfig {
 
 const DEFAULT_CONFIG: ShellConfig = {
   orchestrator: {
-    model: "openrouter/inception/mercury-2",
+    model: "openrouter/z-ai/glm-4.7-flash",
     max_dispatch_result_tokens: 8000,
     compaction_summary: true,
   },
@@ -53,14 +54,14 @@ const DEFAULT_CONFIG: ShellConfig = {
     scout: "openrouter/deepseek/deepseek-v3.2",
     builder: "openrouter/deepseek/deepseek-v3.2",
     reviewer: "openrouter/xiaomi/mimo-v2-flash",
-    "red-team": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
+    "red-team": "openrouter/xiaomi/mimo-v2-flash",
     answer: "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
   },
   agent_fallbacks: {
     scout: "openrouter/mistralai/mistral-nemo",
-    builder: "openrouter/deepseek/deepseek-v3.2",
-    reviewer: "openrouter/deepseek/deepseek-chat",
-    "red-team": "openrouter/deepseek/deepseek-v3.2",
+    builder: "openrouter/xiaomi/mimo-v2-flash",
+    reviewer: "openrouter/mistralai/mistral-nemo",
+    "red-team": "openrouter/mistralai/mistral-nemo",
     answer: "openrouter/mistralai/mistral-nemo",
   },
   agent_timeouts: {
@@ -72,6 +73,7 @@ const DEFAULT_CONFIG: ShellConfig = {
   profiles: {
     work: {
       op: "op://Personal/murmur openrouter key/credential",
+      orchestrator_model: "openrouter/moonshotai/kimi-k2.5",
       agent_models: {
         builder: "openrouter/anthropic/claude-sonnet-4.6",
       },
@@ -95,6 +97,18 @@ const DEFAULT_CONFIG: ShellConfig = {
     require_gh: false,
   },
 };
+
+/**
+ * Resolve the orchestrator model for a given profile.
+ * Profile override takes precedence over the shared orchestrator.model.
+ */
+export function resolveOrchestratorModel(config: ShellConfig, profile: string): string {
+  const profileConfig = (config.profiles as Record<string, any>)[profile];
+  if (profileConfig && typeof profileConfig !== "string" && profileConfig.orchestrator_model) {
+    return profileConfig.orchestrator_model;
+  }
+  return config.orchestrator.model;
+}
 
 /**
  * Resolve effective agent_models for a given profile by merging

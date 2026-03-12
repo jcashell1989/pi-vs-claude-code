@@ -35,7 +35,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
 import * as os from "os";
 import { applyExtensionDefaults } from "./themeMap.ts";
-import { loadConfig as loadShellConfig, resolveProfileModels, resolveProfileFallbacks, type ShellConfig } from "./pi-shell/config.ts";
+import { loadConfig as loadShellConfig, resolveProfileModels, resolveProfileFallbacks, resolveOrchestratorModel, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
 import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS, ORCHESTRATOR_TOOLS } from "./pi-shell/constants.ts";

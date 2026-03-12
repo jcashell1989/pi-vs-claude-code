@@ -6,28 +6,46 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/.pi/shell-config.yaml"
 AUTH_JSON="$HOME/.pi/agent/auth.json"
 
-# Extract orchestrator model from yaml config (simple grep, no deps)
-MODEL=""
+# Extract default profile name
+DEFAULT_PROFILE=""
 if [ -f "$CONFIG" ]; then
-    MODEL=$(grep -A5 '^orchestrator:' "$CONFIG" | grep 'model:' | head -1 | sed 's/.*model: *//' | tr -d '[:space:]')
+    DEFAULT_PROFILE=$(awk '/^profiles:/{found=1} found && /^  default:/{print $2; exit}' "$CONFIG" | tr -d '[:space:]')
 fi
 
-# Extract default profile from profiles section, then inject its op key into auth.json
-if [ -f "$CONFIG" ] && command -v op >/dev/null 2>&1; then
-    # Get default profile name from profiles.default
-    DEFAULT_PROFILE=$(awk '/^profiles:/{found=1} found && /^  default:/{print $2; exit}' "$CONFIG" | tr -d '[:space:]')
+# Resolve orchestrator model: check profile override first, then shared default
+MODEL=""
+if [ -f "$CONFIG" ]; then
     if [ -n "$DEFAULT_PROFILE" ]; then
-        # Get op reference for that profile
-        OP_REF=$(awk -v prof="  ${DEFAULT_PROFILE}:" '/^profiles:/{found=1} found && $0==prof{inprof=1} inprof && /op:/{sub(/^[^:]*: */, ""); gsub(/["'"'"']/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit}' "$CONFIG")
-        if [ -n "$OP_REF" ]; then
-            mkdir -p "$(dirname "$AUTH_JSON")"
-            # Key goes straight from op into auth.json — never stored in a variable
-            op read "$OP_REF" | python3 -c "
+        # Try profile-specific orchestrator_model
+        MODEL=$(awk -v prof="  ${DEFAULT_PROFILE}:" '
+            /^profiles:/{found=1}
+            found && $0==prof{inprof=1}
+            inprof && /^  [^ ]/ && $0!=prof{inprof=0}
+            inprof && /orchestrator_model:/{sub(/^[^:]*: */, ""); gsub(/["'"'"']/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit}
+        ' "$CONFIG")
+    fi
+    # Fall back to shared orchestrator.model
+    if [ -z "$MODEL" ]; then
+        MODEL=$(grep -A5 '^orchestrator:' "$CONFIG" | grep 'model:' | head -1 | sed 's/.*model: *//' | tr -d '[:space:]')
+    fi
+fi
+
+# Inject default profile's API key into auth.json
+if [ -f "$CONFIG" ] && [ -n "$DEFAULT_PROFILE" ] && command -v op >/dev/null 2>&1; then
+    OP_REF=$(awk -v prof="  ${DEFAULT_PROFILE}:" '
+        /^profiles:/{found=1}
+        found && $0==prof{inprof=1}
+        inprof && /^  [^ ]/ && $0!=prof{inprof=0}
+        inprof && /op:/{sub(/^[^:]*: */, ""); gsub(/["'"'"']/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit}
+    ' "$CONFIG")
+    if [ -n "$OP_REF" ]; then
+        mkdir -p "$(dirname "$AUTH_JSON")"
+        # Key goes straight from op into auth.json — never stored in a variable
+        op read "$OP_REF" | python3 -c "
 import sys, json
 k = sys.stdin.read().strip()
 print(json.dumps({'openrouter': {'type': 'api_key', 'key': k}}, indent=2))
 " > "$AUTH_JSON"
-        fi
     fi
 fi
 
