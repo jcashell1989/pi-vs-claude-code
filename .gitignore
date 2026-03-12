@@ -9,7 +9,9 @@ __pycache__/
 .env
 
 .pi/agent-sessions/
+.pi/tasks/sessions/
 .pi/worktrees/
+package-lock.json
 
 
 .playwright-cli/
