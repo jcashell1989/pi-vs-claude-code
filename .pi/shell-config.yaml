@@ -1,0 +1,45 @@
+orchestrator:
+  model: openrouter/minimax/minimax-m2.5
+  max_dispatch_result_tokens: 8000
+  compaction_summary: true
+
+agent_models:
+  scout: openrouter/google/gemini-2.5-flash
+  planner: openrouter/google/gemini-2.5-flash
+  builder: openrouter/anthropic/claude-sonnet-4
+  reviewer: openrouter/anthropic/claude-sonnet-4
+  red-team: openrouter/anthropic/claude-sonnet-4
+  answer: openrouter/google/gemini-2.5-flash
+
+agent_timeouts:
+  scout: 300
+  planner: 300
+  builder: 900
+  reviewer: 600
+  answer: 120
+
+api_keys:
+  work:
+    env: OPENROUTER_WORK_KEY
+  personal:
+    env: OPENROUTER_PERSONAL_KEY
+  default: work
+
+interactive_commands:
+  - vim
+  - nvim
+  - nano
+  - htop
+  - top
+  - less
+  - more
+  - ssh
+  - python
+  - node
+  - irb
+
+git:
+  auto_branch: true
+  auto_pr: true
+  branch_prefix: "task/"
+  require_gh: false

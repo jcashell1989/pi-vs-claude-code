@@ -33,6 +33,7 @@ export const THEME_MAP: Record<string, string> = {
 	"subagent-widget":    "cyberpunk",        // multi-agent futuristic
 	"system-select":      "catppuccin-mocha", // soft selection UI
 	"theme-cycler":       "synthwave",        // neon, it's a theme tool
+	"pi-shell":           "midnight-ocean",   // deep orchestrator shell
 	"tilldone":           "everforest",       // task-focused calm
 	"tool-counter":       "synthwave",        // techy metrics
 	"tool-counter-widget":"synthwave",        // same family
@@ -140,4 +141,16 @@ function applyExtensionTitle(ctx: ExtensionContext): void {
 export function applyExtensionDefaults(fileUrl: string, ctx: ExtensionContext): void {
 	applyExtensionTheme(fileUrl, ctx);
 	applyExtensionTitle(ctx);
+}
+
+// ── Extension factory ──────────────────────────────────────────────────────
+
+/**
+ * Default factory function. This extension is primarily a utility library
+ * for other extensions to import THEME_MAP and helper functions from.
+ *
+ * This factory is a no-op because all functionality is exported as utilities.
+ */
+export default function () {
+	// themeMap is a utility extension; no active hooks needed
 }

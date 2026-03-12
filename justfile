@@ -65,6 +65,10 @@ ext-agent-chain:
 ext-pi-pi:
     pi -e extensions/pi-pi.ts -e extensions/theme-cycler.ts
 
+# Pi-Shell: agent-forward orchestrator shell
+ext-pi-shell:
+    pi -e extensions/pi-shell.ts
+
 #ext
 
 # 15. Session Replay: scrollable timeline overlay of session history (legit)

@@ -21,6 +21,19 @@ frontend:
   - builder
   - bowser
 
+pi-shell:
+  - scout
+  - planner
+  - builder
+  - reviewer
+
+pi-shell-full:
+  - scout
+  - planner
+  - builder
+  - reviewer
+  - red-team
+
 pi-pi:
   - ext-expert
   - theme-expert
