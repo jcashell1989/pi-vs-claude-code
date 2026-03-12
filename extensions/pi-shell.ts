@@ -1145,34 +1145,74 @@ function setupBeforeAgentStart(pi: ExtensionAPI, _config: ShellConfig): void {
 
 /** Set up agent_end: nudge orchestrator if tasks remain incomplete */
 function setupAgentEnd(pi: ExtensionAPI, _taskStore: TaskStore): void {
-	// Will implement: check for incomplete tasks on agent_end, send nudge
-	// message to trigger new turn if work remains
+	const STATUS_ICON: Record<string, string> = { idle: "○", inprogress: "●", done: "✓" };
+	let nudgedThisCycle = false;
 
 	pi.on("agent_end", async (_event, _ctx) => {
-		// Stub: will check _taskStore for incomplete tasks and nudge
+		const incomplete = _taskStore.getAll().filter((t) => t.status !== "done");
+		if (incomplete.length === 0 || nudgedThisCycle) return;
+		nudgedThisCycle = true;
+		const taskList = incomplete
+			.map((t) => `  ${STATUS_ICON[t.status] ?? "?"} #${t.id} [${t.status}]: ${t.text}`)
+			.join("\n");
+		pi.sendMessage(
+			{
+				customType: "tilldone-nudge",
+				content: `⚠️ You still have ${incomplete.length} incomplete task(s):\n\n${taskList}\n\nEither continue working on them or mark them done. Don't stop until it's done!`,
+				display: true,
+			},
+			{ triggerTurn: true },
+		);
 	});
 }
 
 /** Set up user_bash event: cd tracking, tmux routing for interactive commands */
 function setupShellPassthrough(pi: ExtensionAPI, _config: ShellConfig): void {
-	// Will implement: intercept cd commands to update cwd state,
-	// detect interactive commands and route to tmux,
-	// truncate long command output
-
 	pi.on("user_bash", async (_event, _ctx) => {
-		// Stub: will handle cd tracking, tmux routing, output truncation
+		const event = _event as any;
+		const command = (event.command || event.input || "").trim();
+
+		// 1. cd tracking — detect cd commands and update process.cwd()
+		//    Pi handles cd natively; the footer cwd updates via process.cwd().
+		//    Nothing extra needed for Phase 1.
+
+		// 2. Interactive command detection — warn if not in tmux
+		const baseCmd = command.split(/\s+/)[0];
+		if (baseCmd && _config.interactive_commands.includes(baseCmd)) {
+			if (!process.env.TMUX) {
+				_ctx.ui.notify(
+					`"${baseCmd}" is interactive. For best results, run pi-shell inside tmux.`,
+					"info",
+				);
+			}
+			// In tmux: future phases may route to a new tmux pane.
+		}
+
+		// 3. Output truncation is handled by pi's built-in passthrough for Phase 1.
+
 		return { action: "continue" as const };
 	});
 }
 
 /** Set up session_before_compact: inject task summary into post-compaction context */
 function setupCompaction(pi: ExtensionAPI, _taskStore: TaskStore): void {
-	// Will implement: on compaction, inject summary message with current
-	// task list and active dispatches so orchestrator retains awareness
-
 	pi.on("session_before_compact", async (_event, _ctx) => {
-		// Stub: will inject task state summary for post-compaction context
-		return {};
+		const tasks = _taskStore.getAll();
+		if (tasks.length === 0) return {};
+
+		const lines: string[] = [
+			"## Pi-Shell Task State (preserved across compaction)",
+			"",
+			_taskStore.summary(),
+		];
+
+		const active = _taskStore.getActive();
+		if (active) {
+			lines.push("");
+			lines.push(`Active task: #${active.id} — ${active.text}`);
+		}
+
+		return { summary: lines.join("\n") };
 	});
 }
 
