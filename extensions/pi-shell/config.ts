@@ -8,6 +8,14 @@ export interface ShellConfig {
     max_dispatch_result_tokens: number;
     compaction_summary: boolean;
   };
+  fan_out: {
+    cost_ceiling: number;
+    max_agents: number;
+  };
+  context_injection: {
+    enabled: boolean;
+    max_matches: number;
+  };
   agent_models: Record<string, string>;
   agent_timeouts: Record<string, number>;
   api_keys: Record<string, { env: string }> & { default: string };
@@ -25,6 +33,14 @@ const DEFAULT_CONFIG: ShellConfig = {
     model: "openrouter/minimax/minimax-m2.5",
     max_dispatch_result_tokens: 8000,
     compaction_summary: true,
+  },
+  fan_out: {
+    cost_ceiling: 0.50,
+    max_agents: 5,
+  },
+  context_injection: {
+    enabled: true,
+    max_matches: 3,
   },
   agent_models: {
     scout: "openrouter/google/gemini-2.5-flash",

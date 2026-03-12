@@ -38,6 +38,13 @@ import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/conf
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
 import { TASK_STATUS_ICON, AGENT_STATUS_ICON, AGENT_FOOTER_ICON, TILLDONE_TOOLS, ORCHESTRATOR_TOOLS } from "./pi-shell/constants.ts";
+import {
+	logDispatch, generateDispatchId, markFollowUps,
+	findSimilarDispatches, formatInjectionContext,
+	formatAnalysisReport, readLog,
+	OPERATION_TYPES, type OperationType,
+} from "./pi-shell/dispatch-log.ts";
+import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
 import { readFileSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
@@ -314,14 +321,15 @@ function registerDispatch(
 	pi.registerTool({
 		name: "dispatch_agent",
 		label: "Dispatch Agent",
-		description: "Dispatch a task to a specialist subagent. Specify agent name, task description, and target branch.",
+		description: "Dispatch a task to a specialist subagent. Specify agent name, task description, operation type, and target branch.",
 		parameters: Type.Object({
 			agent: Type.String({ description: "Agent name (e.g. scout, builder, reviewer)" }),
 			task: Type.String({ description: "Clear, specific task description for the agent" }),
 			branch: Type.Optional(Type.String({ description: "Target git branch for code changes" })),
+			operationType: StringEnum(OPERATION_TYPES, { description: "Type of operation: refactor, fix, add, investigate, review, audit, document, test" }),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			const { agent, task, branch } = params as { agent: string; task: string; branch?: string };
+			const { agent, task, branch, operationType } = params as { agent: string; task: string; branch?: string; operationType: OperationType };
 
 			// Resolve the active task to attach cost to
 			const activeTask = _taskStore.getActive();
@@ -357,12 +365,31 @@ function registerDispatch(
 				_agentTracker.update(agent, { elapsed: Date.now() - startTime });
 			}, 1000);
 
-			// Send initial streaming update
+			// Context injection: surface relevant past outcomes
+			let injectionPrefix = "";
+			if (_config.context_injection.enabled) {
+				const similar = findSimilarDispatches(cwd, agent, operationType, _config.context_injection.max_matches);
+				const ctx = formatInjectionContext(similar);
+				if (ctx) {
+					injectionPrefix = ctx + "\n\n---\n\n";
+				}
+			}
+
+			// Send initial streaming update (include injection context if available)
 			if (onUpdate) {
+				const dispatchMsg = injectionPrefix
+					? `${injectionPrefix}Dispatching ${agent}...`
+					: `Dispatching ${agent}...`;
 				onUpdate({
-					content: [{ type: "text", text: `Dispatching ${agent}...` }],
+					content: [{ type: "text", text: dispatchMsg }],
 					details: { agent, task, status: "dispatching" },
 				});
+			}
+
+			// Generate dispatch ID and mark follow-ups for same parentTaskId
+			const dispatchId = generateDispatchId();
+			if (taskId > 0) {
+				markFollowUps(cwd, taskId, dispatchId);
 			}
 
 			try {
@@ -413,6 +440,25 @@ function registerDispatch(
 				const status = result.exitCode === 0 ? "done" : "error";
 				_agentTracker.update(agent, { elapsed: result.elapsed, cost: result.cost });
 				_agentTracker.finish(agent, status);
+
+				// Log dispatch to persistent dispatch log
+				logDispatch(cwd, {
+					id: dispatchId,
+					timestamp: new Date().toISOString(),
+					agent,
+					operation: operationType,
+					taskPrompt: task,
+					taskSummary: task.slice(0, 120),
+					outcome: result.exitCode === 0 ? "success" : "failure",
+					exitCode: result.exitCode,
+					cost: result.cost,
+					elapsed: result.elapsed,
+					branch: targetBranch || null,
+					model: model || null,
+					parentTaskId: taskId,
+					followUpNeeded: false,
+					fanOutGroupId: null,
+				});
 
 				const summary = `[${agent}] ${status} in ${Math.round(result.elapsed / 1000)}s` +
 					(result.cost > 0 ? ` ($${result.cost.toFixed(3)})` : "");
@@ -542,6 +588,25 @@ function registerAnswer(
 				if (result.cost > 0) {
 					_taskStore.addCost(task.id, result.cost);
 				}
+
+				// Log answer dispatch
+				logDispatch(cwd, {
+					id: generateDispatchId(),
+					timestamp: new Date().toISOString(),
+					agent: "scout",
+					operation: "investigate",
+					taskPrompt: question,
+					taskSummary: `[answer] ${question.slice(0, 100)}`,
+					outcome: result.exitCode === 0 ? "success" : "failure",
+					exitCode: result.exitCode,
+					cost: result.cost,
+					elapsed: result.elapsed,
+					branch: null,
+					model: model || null,
+					parentTaskId: task.id,
+					followUpNeeded: false,
+					fanOutGroupId: null,
+				});
 
 				return {
 					content: [{ type: "text" as const, text: result.output || "(no answer returned)" }],
@@ -778,6 +843,288 @@ function registerKillAgent(pi: ExtensionAPI, _agentTracker: AgentTracker): void 
 		renderResult(result, _options, _theme) {
 			const text = result.content[0];
 			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+		},
+	});
+}
+
+/** Register the fan_out tool for parallel read-only dispatch */
+function registerFanOut(
+	pi: ExtensionAPI,
+	_config: ShellConfig,
+	_taskStore: TaskStore,
+	_agentTracker: AgentTracker,
+): void {
+	const cwd = process.cwd();
+	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
+
+	pi.registerTool({
+		name: "fan_out",
+		label: "Fan Out",
+		description:
+			"Dispatch multiple read-only agents in parallel across explicitly specified areas. " +
+			"Read-only agents only (scout, reviewer, red-team, plan-reviewer). " +
+			"You must know the areas before calling — scout first if you don't.",
+		parameters: Type.Object({
+			agent: Type.String({ description: "Read-only agent name (scout, reviewer, red-team, plan-reviewer)" }),
+			dispatches: Type.Array(
+				Type.Object({
+					task: Type.String({ description: "Focused task for this area — must request structured summary" }),
+					scope: Type.String({ description: "Area label (e.g. 'src/auth', 'API layer')" }),
+				}),
+				{ minItems: 2, maxItems: 5, description: "2-5 parallel dispatches with explicit scopes" },
+			),
+		}),
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			const { agent, dispatches } = params as { agent: string; dispatches: FanOutDispatch[] };
+
+			// Enforce read-only whitelist
+			if (!FAN_OUT_WHITELIST.includes(agent as any)) {
+				return {
+					content: [{ type: "text" as const, text: `Error: fan_out only supports read-only agents: ${FAN_OUT_WHITELIST.join(", ")}. Got: ${agent}` }],
+				};
+			}
+
+			const activeTask = _taskStore.getActive();
+			const taskId = activeTask?.id ?? 0;
+			const model = _config.agent_models[agent.toLowerCase()];
+			const timeout = _config.agent_timeouts[agent.toLowerCase()] ?? 300;
+			const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
+			const costCeiling = _config.fan_out.cost_ceiling;
+
+			// Cost estimate
+			const estimated = estimateFanOutCost(dispatches.length);
+			if (estimated > costCeiling) {
+				return {
+					content: [{ type: "text" as const, text: `Estimated cost $${estimated.toFixed(2)} exceeds ceiling $${costCeiling.toFixed(2)}. Reduce dispatches or raise fan_out.cost_ceiling.` }],
+				};
+			}
+
+			// Send initial update
+			if (onUpdate) {
+				const scopes = dispatches.map(d => d.scope).join(", ");
+				onUpdate({
+					content: [{ type: "text", text: `Fan-out: ${dispatches.length}x ${agent} → [${scopes}] (est. $${estimated.toFixed(2)})` }],
+					details: { agent, dispatches: dispatches.length, status: "dispatching" },
+				});
+			}
+
+			// Track each leg in AgentTracker
+			for (let i = 0; i < dispatches.length; i++) {
+				const key = `${agent}-${i}`;
+				_agentTracker.start(key, dispatches[i].task, taskId, 0);
+			}
+
+			try {
+				const result = await executeFanOut({
+					agent,
+					dispatches,
+					cwd,
+					model,
+					timeout,
+					maxResultTokens,
+					sessionDir,
+					taskId,
+					parentTaskId: taskId,
+					costCeiling,
+					signal,
+					onUpdate: (scope, data) => {
+						if (onUpdate) {
+							onUpdate({
+								content: [{ type: "text", text: data.content }],
+								details: { agent, scope, status: "running", type: data.type },
+							});
+						}
+					},
+					onCostUpdate: (totalCost) => {
+						if (activeTask) {
+							_taskStore.addCost(activeTask.id, totalCost);
+						}
+					},
+				});
+
+				// Clean up tracker entries
+				for (let i = 0; i < dispatches.length; i++) {
+					const key = `${agent}-${i}`;
+					const legResult = result.legs[i];
+					_agentTracker.finish(key, legResult.exitCode === 0 ? "done" : "error");
+				}
+
+				const formatted = formatFanOutResults(result, agent);
+
+				const costWarning = result.totalCost > costCeiling
+					? `\n\nWarning: Total cost $${result.totalCost.toFixed(3)} exceeded ceiling $${costCeiling.toFixed(2)}\n`
+					: "";
+
+				return {
+					content: [{ type: "text" as const, text: `${costWarning}${formatted}` }],
+					details: {
+						agent,
+						dispatches: dispatches.length,
+						status: "done",
+						totalCost: result.totalCost,
+						totalElapsed: result.totalElapsed,
+						fanOutGroupId: result.fanOutGroupId,
+					},
+				};
+			} catch (err: any) {
+				// Clean up tracker
+				for (let i = 0; i < dispatches.length; i++) {
+					_agentTracker.finish(`${agent}-${i}`, "error");
+				}
+
+				return {
+					content: [{ type: "text" as const, text: `Error in fan_out: ${err?.message || err}` }],
+					details: { agent, dispatches: dispatches.length, status: "error" },
+				};
+			}
+		},
+		renderCall(args, theme) {
+			const a = args as any;
+			const count = a.dispatches?.length ?? "?";
+			return new Text(
+				theme.fg("toolTitle", theme.bold("fan_out ")) +
+				theme.fg("accent", `${count}x ${a.agent || "?"}`) +
+				theme.fg("dim", ` → ${(a.dispatches || []).map((d: any) => d.scope).join(", ")}`),
+				0, 0,
+			);
+		},
+		renderResult(result, options, theme) {
+			const details = result.details as any;
+			if (!details) {
+				const text = result.content[0];
+				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+			}
+
+			if (options.isPartial || details.status === "dispatching") {
+				return new Text(
+					theme.fg("accent", `● fan_out ${details.dispatches || "?"}x ${details.agent || "?"}`) +
+					theme.fg("dim", " working..."),
+					0, 0,
+				);
+			}
+
+			const icon = details.status === "done" ? "✓" : "✗";
+			const color = details.status === "done" ? "success" : "error";
+			const elapsed = typeof details.totalElapsed === "number" ? Math.round(details.totalElapsed / 1000) : 0;
+			const costStr = details.totalCost > 0 ? ` $${details.totalCost.toFixed(3)}` : "";
+			const header = theme.fg(color, `${icon} fan_out ${details.dispatches}x ${details.agent}`) +
+				theme.fg("dim", ` ${elapsed}s${costStr}`);
+
+			if (options.expanded && result.content[0]?.type === "text") {
+				const output = result.content[0].text;
+				const truncated = output.length > 4000
+					? output.slice(0, 4000) + "\n... [truncated in view]"
+					: output;
+				return new Text(header + "\n" + theme.fg("muted", truncated), 0, 0);
+			}
+
+			return new Text(header, 0, 0);
+		},
+	});
+}
+
+/** Register the /improve-agents command for human-in-the-loop agent evolution */
+function registerImproveAgentsCommand(
+	pi: ExtensionAPI,
+	_config: ShellConfig,
+	_taskStore: TaskStore,
+	_agentTracker: AgentTracker,
+): void {
+	const cwd = process.cwd();
+	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
+
+	pi.registerCommand("improve-agents", {
+		description: "Analyze dispatch log and propose agent definition improvements",
+		handler: async (_args, _ctx) => {
+			const entries = readLog(cwd);
+			if (entries.length < 5) {
+				_ctx.ui.notify(
+					`Only ${entries.length} dispatch log entries. Accumulate more data (10+ dispatches) for meaningful analysis.`,
+					"info",
+				);
+				return;
+			}
+
+			// Generate analysis report
+			const report = formatAnalysisReport(cwd);
+
+			// Read current agent definitions
+			const agentsDir = path.join(cwd, ".pi", "agents");
+			const agentDefs: string[] = [];
+			try {
+				const files = readdirSync(agentsDir).filter(f => f.endsWith(".md") && f !== "orchestrator.md");
+				for (const file of files) {
+					try {
+						const content = readFileSync(path.join(agentsDir, file), "utf-8");
+						agentDefs.push(`--- ${file} ---\n${content}`);
+					} catch { /* skip unreadable */ }
+				}
+			} catch { /* agents dir unreadable */ }
+
+			const agentDefsText = agentDefs.length > 0
+				? agentDefs.join("\n\n")
+				: "(No agent definitions found)";
+
+			// Dispatch analysis to a capable model
+			const analysisPrompt = [
+				"You are an expert at improving AI agent configurations. Analyze the following dispatch log data and current agent definitions, then propose specific improvements.",
+				"",
+				"## Dispatch Log Analysis",
+				report,
+				"",
+				"## Current Agent Definitions",
+				agentDefsText,
+				"",
+				"## Your Task",
+				"Based on the dispatch data, propose specific, concrete edits to the agent .md files. For each proposal:",
+				"1. State what you're changing and why (cite evidence from the log)",
+				"2. Show the exact edit (what to add/change/remove in which file)",
+				"3. Explain the expected improvement",
+				"",
+				"Focus on:",
+				"- System prompt improvements (add instructions that would prevent observed failures)",
+				"- Tool adjustments (add/remove tools based on what agents actually need)",
+				"- Model recommendations (if an agent's tasks are simple, suggest cheaper models)",
+				"- Agents with high follow-up rates (their prompts may need more specificity)",
+				"",
+				"Be specific — not 'improve the prompt' but 'add this sentence to the system prompt'.",
+			].join("\n");
+
+			_ctx.ui.notify("Analyzing dispatch log and generating improvement proposals...", "info");
+
+			try {
+				const model = _config.agent_models.reviewer || "openrouter/anthropic/claude-sonnet-4";
+				const timeout = _config.agent_timeouts.reviewer ?? 600;
+				const maxResultTokens = _config.orchestrator.max_dispatch_result_tokens;
+
+				const result = await spawnSubagent({
+					agent: "scout",
+					task: analysisPrompt,
+					model,
+					cwd,
+					timeout,
+					maxResultTokens,
+					sessionDir,
+					taskId: 0,
+					onUpdate: (data) => {
+						if (data.type === "text_delta") {
+							// Stream progress silently
+						}
+					},
+				});
+
+				if (result.output) {
+					_ctx.ui.notify(
+						`Agent Improvement Proposals\n\n${result.output}\n\n` +
+						`Cost: $${result.cost.toFixed(3)} | Review these proposals and apply manually to .pi/agents/*.md`,
+						"info",
+					);
+				} else {
+					_ctx.ui.notify("Analysis completed but no proposals generated. Try again with more log data.", "info");
+				}
+			} catch (err: any) {
+				_ctx.ui.notify(`Error analyzing dispatch log: ${err?.message || err}`, "info");
+			}
 		},
 	});
 }
@@ -1269,6 +1616,7 @@ export default function piShell(pi: ExtensionAPI) {
 	// --- Tools ---
 	registerTillDone(pi, taskStore);
 	registerDispatch(pi, config, taskStore, agentTracker);
+	registerFanOut(pi, config, taskStore, agentTracker);
 	registerAnswer(pi, config, taskStore, agentTracker);
 	registerGitStatus(pi);
 	registerSwitchKey(pi, config);
@@ -1280,6 +1628,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerStatusCommand(pi, taskStore);
 	registerKillCommand(pi, agentTracker);
 	registerHelpCommand(pi);
+	registerImproveAgentsCommand(pi, config, taskStore, agentTracker);
 
 	// --- Events ---
 	setupSessionStart(pi, config, taskStore, agentTracker, shellState, setupFooter, setupDashboard);

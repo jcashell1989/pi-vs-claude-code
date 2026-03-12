@@ -3,6 +3,14 @@ orchestrator:
   max_dispatch_result_tokens: 8000
   compaction_summary: true
 
+fan_out:
+  cost_ceiling: 0.50
+  max_agents: 5
+
+context_injection:
+  enabled: true
+  max_matches: 3
+
 agent_models:
   scout: openrouter/anthropic/claude-haiku-4.5
   planner: openrouter/anthropic/claude-haiku-4.5
