@@ -46,7 +46,8 @@ import {
 	OPERATION_TYPES, type OperationType,
 } from "./pi-shell/dispatch-log.ts";
 import { FAN_OUT_WHITELIST, executeFanOut, formatFanOutResults, estimateFanOutCost, type FanOutDispatch } from "./pi-shell/fan-out.ts";
-import { readFileSync, readdirSync } from "fs";
+import { executeParallelDispatch, formatParallelResults, type ParallelDispatchLeg } from "./pi-shell/parallel-dispatch.ts";
+import { readFileSync, readdirSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import { parse as yamlParse } from "yaml";
 
@@ -63,6 +64,8 @@ interface AgentState {
 	cost: number;
 	pid: number | null;
 	timer?: ReturnType<typeof setInterval>;
+	groupId?: string;
+	groupType?: "fan_out" | "parallel_dispatch";
 }
 
 interface AgentTracker {
@@ -71,7 +74,7 @@ interface AgentTracker {
 	/** Get agent by name */
 	get(name: string): AgentState | undefined;
 	/** Start tracking an agent run */
-	start(name: string, task: string, taskId: number, pid: number): AgentState;
+	start(name: string, task: string, taskId: number, pid: number, opts?: { groupId?: string; groupType?: AgentState["groupType"] }): AgentState;
 	/** Update an agent's state fields */
 	update(name: string, fields: Partial<AgentState>): void;
 	/** Mark an agent as finished (done or error) */
@@ -96,7 +99,7 @@ function createAgentTracker(): AgentTracker {
 	return {
 		getAll: () => Array.from(agents.values()),
 		get: (name) => agents.get(name.toLowerCase()),
-		start: (name, task, taskId, pid) => {
+		start: (name, task, taskId, pid, opts?: { groupId?: string; groupType?: AgentState["groupType"] }) => {
 			const state: AgentState = {
 				name,
 				status: "running",
@@ -107,6 +110,8 @@ function createAgentTracker(): AgentTracker {
 				contextPct: 0,
 				cost: 0,
 				pid,
+				groupId: opts?.groupId,
+				groupType: opts?.groupType,
 			};
 			agents.set(name.toLowerCase(), state);
 			return state;
@@ -137,7 +142,7 @@ function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
 		name: "tilldone",
 		label: "TillDone",
 		description:
-			"Manage your task list. You MUST add tasks before using any other tools. " +
+			"Manage your task list. dispatch_agent and fan_out auto-create tasks, so you only need this for multi-step planning. " +
 			"Actions: new-list (text=title), add (text or texts[] for batch), toggle (id) — cycles idle→inprogress→done, " +
 			"remove (id), update (id + text), list, clear.",
 		parameters: Type.Object({
@@ -292,20 +297,31 @@ function registerTillDone(pi: ExtensionAPI, taskStore: TaskStore): void {
 		},
 	});
 
-	// Blocking gate: prevent non-whitelisted tools when no task is active
+	// Blocking gate: prevent non-whitelisted tools when no task is active.
+	// dispatch_agent and fan_out auto-create a task if none exists (reduces friction).
+	const AUTO_TASK_TOOLS = ["dispatch_agent", "fan_out", "parallel_dispatch"];
 	pi.on("tool_call", async (event, _ctx) => {
 		if (TILLDONE_TOOLS.includes(event.toolName as any)) return { block: false };
 
-		const tasks = taskStore.getAll();
 		const active = taskStore.getActive();
+		if (active) return { block: false };
 
+		// Auto-create and activate a task for dispatch/fan_out calls
+		if (AUTO_TASK_TOOLS.includes(event.toolName)) {
+			const taskDesc = (event.parameters as any)?.task
+				?? (event.parameters as any)?.dispatches?.[0]?.task
+				?? "dispatched work";
+			const slug = taskDesc.slice(0, 80).replace(/\n/g, " ");
+			const newTask = taskStore.add(slug);
+			taskStore.toggle(newTask.id); // activate it
+			return { block: false };
+		}
+
+		const tasks = taskStore.getAll();
 		if (tasks.length === 0) {
-			return { block: true, reason: "No tasks defined. Use `tilldone add` first." };
+			return { block: true, reason: "No tasks defined. Use `tilldone add` first, or just call dispatch_agent/fan_out directly (they auto-create tasks)." };
 		}
-		if (!active) {
-			return { block: true, reason: "No task in progress. Use `tilldone toggle <id>` to activate a task." };
-		}
-		return { block: false };
+		return { block: true, reason: "No task in progress. Use `tilldone toggle <id>` to activate a task." };
 	});
 }
 
@@ -323,15 +339,16 @@ function registerDispatch(
 	pi.registerTool({
 		name: "dispatch_agent",
 		label: "Dispatch Agent",
-		description: "Dispatch a task to a specialist subagent. Specify agent name, task description, operation type, and target branch.",
+		description: "Dispatch a task to a specialist subagent. Specify agent name and task description. Operation type and branch are optional.",
 		parameters: Type.Object({
-			agent: Type.String({ description: "Agent name (e.g. scout, builder, reviewer)" }),
+			agent: Type.String({ description: "Agent name: scout, builder, reviewer, red-team, plan-reviewer, documenter" }),
 			task: Type.String({ description: "Clear, specific task description for the agent" }),
-			branch: Type.Optional(Type.String({ description: "Target git branch for code changes" })),
-			operationType: StringEnum(OPERATION_TYPES, { description: "Type of operation: refactor, fix, add, investigate, review, audit, document, test" }),
+			branch: Type.Optional(Type.String({ description: "Target git branch for code changes (e.g. task/3-fix-auth)" })),
+			operationType: Type.Optional(StringEnum(OPERATION_TYPES, { description: "Type of operation: refactor, fix, add, investigate, review, audit, document, test. Defaults to 'investigate' if omitted." })),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			const { agent, task, branch, operationType } = params as { agent: string; task: string; branch?: string; operationType: OperationType };
+			const { agent, task, branch } = params as { agent: string; task: string; branch?: string; operationType?: OperationType };
+			const operationType: OperationType = (params as any).operationType ?? "investigate";
 
 			// Resolve the active task to attach cost to
 			const activeTask = _taskStore.getActive();
@@ -405,6 +422,7 @@ function registerDispatch(
 					fallbackModel,
 					branch: targetBranch,
 					cwd,
+					agentDefsDir: PI_SHELL_ROOT,
 					timeout,
 					maxResultTokens,
 					sessionDir,
@@ -576,6 +594,7 @@ function registerAnswer(
 					model,
 					fallbackModel: answerFallback,
 					cwd,
+					agentDefsDir: PI_SHELL_ROOT,
 					timeout,
 					maxResultTokens,
 					sessionDir,
@@ -816,15 +835,24 @@ function registerSwitchKeyCommand(
 				return;
 			}
 
-			// Step 4: Switch active profile — update key, models, and fallbacks
+			// Step 4: Check if orchestrator model would change
+			const prevOrch = resolveOrchestratorModel(_config, _shellState.activeProfile);
+			const newOrch = resolveOrchestratorModel(_config, profile);
+			const orchNote = newOrch !== prevOrch
+				? `\n⚠ Orchestrator model differs for '${profile}' (${newOrch.split("/").pop()}) — restart pish to apply.`
+				: "";
+
+			// Step 5: Switch active profile — update key, models, and fallbacks
 			_shellState.activeProfile = profile;
 			_shellState.agentModels = resolveProfileModels(_config, profile);
 			_shellState.agentFallbacks = resolveProfileFallbacks(_config, profile);
 
-			// Step 5: Confirm with model summary
-			const builderModel = _shellState.agentModels.builder?.split("/").pop() || "default";
+			// Step 6: Confirm with model summary
+			const modelLines = Object.entries(_shellState.agentModels)
+				.map(([role, model]) => `  ${role}: ${(model as string).split("/").pop()}`)
+				.join("\n");
 			_ctx.ui.notify(
-				`Switched to '${profile}'\nKey verified. Builder: ${builderModel}`,
+				`Switched to '${profile}' ✓\nAgent models:\n${modelLines}${orchNote}`,
 				"info",
 			);
 		},
@@ -955,9 +983,10 @@ function registerFanOut(
 			}
 
 			// Track each leg in AgentTracker
+			const foGroupId = `fo-${Date.now()}`;
 			for (let i = 0; i < dispatches.length; i++) {
 				const key = `${agent}-${i}`;
-				_agentTracker.start(key, dispatches[i].task, taskId, 0);
+				_agentTracker.start(key, dispatches[i].task, taskId, 0, { groupId: foGroupId, groupType: "fan_out" });
 			}
 
 			try {
@@ -965,6 +994,7 @@ function registerFanOut(
 					agent,
 					dispatches,
 					cwd,
+					agentDefsDir: PI_SHELL_ROOT,
 					model,
 					fallbackModel,
 					timeout,
@@ -1070,6 +1100,176 @@ function registerFanOut(
 	});
 }
 
+/** Register the parallel_dispatch tool for running multiple agents concurrently */
+function registerParallelDispatch(
+	pi: ExtensionAPI,
+	_config: ShellConfig,
+	_taskStore: TaskStore,
+	_agentTracker: AgentTracker,
+	_shellState: { agentModels: Record<string, string>; agentFallbacks: Record<string, string> },
+): void {
+	const cwd = process.cwd();
+	const sessionDir = path.join(cwd, ".pi", "tasks", "sessions");
+
+	pi.registerTool({
+		name: "parallel_dispatch",
+		label: "Parallel Dispatch",
+		description:
+			"Dispatch 2-5 agents in parallel. Supports ALL agent types including builder. " +
+			"Each dispatch can have its own branch (uses git worktrees for isolation). " +
+			"Use this when tasks are independent and can run concurrently.",
+		parameters: Type.Object({
+			dispatches: Type.Array(
+				Type.Object({
+					agent: Type.String({ description: "Agent name: scout, builder, reviewer, red-team, plan-reviewer, documenter" }),
+					task: Type.String({ description: "Clear, specific task description" }),
+					branch: Type.Optional(Type.String({ description: "Git branch for this dispatch (e.g. task/3-fix-auth). Uses worktree for isolation." })),
+					operationType: Type.Optional(StringEnum(OPERATION_TYPES, { description: "Operation type. Defaults to 'investigate'." })),
+				}),
+				{ minItems: 2, maxItems: 5, description: "2-5 parallel agent dispatches" },
+			),
+		}),
+		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+			const { dispatches } = params as { dispatches: ParallelDispatchLeg[] };
+
+			const activeTask = _taskStore.getActive();
+			const taskId = activeTask?.id ?? 0;
+
+			// Send initial update
+			if (onUpdate) {
+				const agents = dispatches.map(d => d.agent).join(", ");
+				onUpdate({
+					content: [{ type: "text", text: `Parallel dispatch: ${dispatches.length} agents → [${agents}]` }],
+					details: { dispatches: dispatches.length, status: "dispatching" },
+				});
+			}
+
+			// Track each leg in AgentTracker with composite keys
+			const pdGroupId = `pd-${Date.now()}`;
+			for (let i = 0; i < dispatches.length; i++) {
+				const key = `${dispatches[i].agent}-p${i}`;
+				_agentTracker.start(key, dispatches[i].task, taskId, 0, { groupId: pdGroupId, groupType: "parallel_dispatch" });
+			}
+
+			// Set up elapsed timers for each leg
+			const startTime = Date.now();
+			const elapsedTimer = setInterval(() => {
+				for (let i = 0; i < dispatches.length; i++) {
+					const key = `${dispatches[i].agent}-p${i}`;
+					_agentTracker.update(key, { elapsed: Date.now() - startTime });
+				}
+			}, 1000);
+
+			try {
+				const result = await executeParallelDispatch({
+					dispatches,
+					cwd,
+					agentDefsDir: PI_SHELL_ROOT,
+					models: _shellState.agentModels,
+					fallbacks: _shellState.agentFallbacks,
+					timeouts: _config.agent_timeouts,
+					maxResultTokens: _config.orchestrator.max_dispatch_result_tokens,
+					sessionDir,
+					taskId,
+					signal,
+					onLegUpdate: (index, agent, data) => {
+						const key = `${agent}-p${index}`;
+						if (data.type === "text_delta") {
+							_agentTracker.update(key, { lastWork: data.content });
+						}
+						if (onUpdate) {
+							onUpdate({
+								content: [{ type: "text", text: data.content }],
+								details: { agent, index, status: "running", type: data.type },
+							});
+						}
+					},
+					onCostUpdate: (totalCost) => {
+						if (activeTask) {
+							_taskStore.addCost(activeTask.id, totalCost);
+						}
+					},
+				});
+
+				clearInterval(elapsedTimer);
+
+				// Finish tracker entries
+				for (let i = 0; i < dispatches.length; i++) {
+					const key = `${dispatches[i].agent}-p${i}`;
+					const legResult = result.legs[i];
+					_agentTracker.update(key, { elapsed: legResult.elapsed, cost: legResult.cost });
+					_agentTracker.finish(key, legResult.exitCode === 0 ? "done" : "error");
+				}
+
+				const formatted = formatParallelResults(result);
+
+				return {
+					content: [{ type: "text" as const, text: formatted }],
+					details: {
+						dispatches: dispatches.length,
+						status: "done",
+						totalCost: result.totalCost,
+						totalElapsed: result.totalElapsed,
+						groupId: result.groupId,
+					},
+				};
+			} catch (err: any) {
+				clearInterval(elapsedTimer);
+				for (let i = 0; i < dispatches.length; i++) {
+					_agentTracker.finish(`${dispatches[i].agent}-p${i}`, "error");
+				}
+				return {
+					content: [{ type: "text" as const, text: `Error in parallel_dispatch: ${err?.message || err}` }],
+					details: { dispatches: dispatches.length, status: "error" },
+				};
+			}
+		},
+		renderCall(args, theme) {
+			const a = args as any;
+			const legs = a.dispatches || [];
+			const agents = legs.map((d: any) => d.agent || "?").join(", ");
+			return new Text(
+				theme.fg("toolTitle", theme.bold("parallel_dispatch ")) +
+				theme.fg("accent", `${legs.length}x`) +
+				theme.fg("dim", ` → [${agents}]`),
+				0, 0,
+			);
+		},
+		renderResult(result, options, theme) {
+			const details = result.details as any;
+			if (!details) {
+				const text = result.content[0];
+				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+			}
+
+			if (options.isPartial || details.status === "dispatching") {
+				return new Text(
+					theme.fg("accent", `● parallel_dispatch ${details.dispatches || "?"}x`) +
+					theme.fg("dim", " working..."),
+					0, 0,
+				);
+			}
+
+			const icon = details.status === "done" ? "✓" : "✗";
+			const color = details.status === "done" ? "success" : "error";
+			const elapsed = typeof details.totalElapsed === "number" ? Math.round(details.totalElapsed / 1000) : 0;
+			const costStr = details.totalCost > 0 ? ` $${details.totalCost.toFixed(3)}` : "";
+			const header = theme.fg(color, `${icon} parallel_dispatch ${details.dispatches}x`) +
+				theme.fg("dim", ` ${elapsed}s${costStr}`);
+
+			if (options.expanded && result.content[0]?.type === "text") {
+				const output = result.content[0].text;
+				const truncated = output.length > 4000
+					? output.slice(0, 4000) + "\n... [truncated in view]"
+					: output;
+				return new Text(header + "\n" + theme.fg("muted", truncated), 0, 0);
+			}
+
+			return new Text(header, 0, 0);
+		},
+	});
+}
+
 /** Register the /improve-agents command for human-in-the-loop agent evolution */
 function registerImproveAgentsCommand(
 	pi: ExtensionAPI,
@@ -1096,8 +1296,9 @@ function registerImproveAgentsCommand(
 			// Generate analysis report
 			const report = formatAnalysisReport(cwd);
 
-			// Read current agent definitions
-			const agentsDir = path.join(cwd, ".pi", "agents");
+			// Read current agent definitions (cwd first, fallback to pi-orchestrator root)
+			const cwdAgents = path.join(cwd, ".pi", "agents");
+			const agentsDir = existsSync(cwdAgents) ? cwdAgents : path.join(PI_SHELL_ROOT, ".pi", "agents");
 			const agentDefs: string[] = [];
 			try {
 				const files = readdirSync(agentsDir).filter(f => f.endsWith(".md") && f !== "orchestrator.md");
@@ -1150,6 +1351,7 @@ function registerImproveAgentsCommand(
 					task: analysisPrompt,
 					model,
 					cwd,
+					agentDefsDir: PI_SHELL_ROOT,
 					timeout,
 					maxResultTokens,
 					sessionDir,
@@ -1241,11 +1443,25 @@ function registerFooter(
 					  theme.fg("dim", `/${tasks.length} ✓`)
 					: "";
 
-				// active agents with status icons
+				// active agents with status icons — group parallel agents by base name
 				const allAgents = _agentTracker.getAll();
-				const agentParts = allAgents
-					.filter((a) => a.status === "running" || a.status === "idle")
-					.map((a) => theme.fg("accent", `${a.name}${AGENT_FOOTER_ICON[a.status as keyof typeof AGENT_FOOTER_ICON] || "◻"}`));
+				const activeAgents = allAgents.filter(a => a.status === "running" || a.status === "idle");
+				const groups = new Map<string, { count: number; status: string }>();
+				for (const a of activeAgents) {
+					const base = a.name.replace(/-(p?\d+)$/, "");
+					const existing = groups.get(base);
+					if (existing) {
+						existing.count++;
+						if (a.status === "running") existing.status = "running";
+					} else {
+						groups.set(base, { count: 1, status: a.status });
+					}
+				}
+				const agentParts = Array.from(groups.entries()).map(([name, { count, status }]) => {
+					const icon = AGENT_FOOTER_ICON[status as keyof typeof AGENT_FOOTER_ICON] || "◻";
+					const countStr = count > 1 ? `×${count}` : "";
+					return theme.fg("accent", `${name}${icon}${countStr}`);
+				});
 				const agentStr = agentParts.length > 0
 					? sep + agentParts.join(" ")
 					: "";
@@ -1313,18 +1529,72 @@ function registerDashboard(_pi: ExtensionAPI, _agentTracker: AgentTracker): (ctx
 						theme.fg("dim", ` (${running.length} running)`),
 					);
 
+					// Group agents by groupId for display
+					const ungrouped: AgentState[] = [];
+					const groupMap = new Map<string, { type: string; agents: AgentState[] }>();
 					for (const agent of running) {
+						if (agent.groupId) {
+							const existing = groupMap.get(agent.groupId);
+							if (existing) {
+								existing.agents.push(agent);
+							} else {
+								groupMap.set(agent.groupId, {
+									type: agent.groupType === "fan_out" ? "fan_out" : "parallel",
+									agents: [agent],
+								});
+							}
+						} else {
+							ungrouped.push(agent);
+						}
+					}
+
+					// Render grouped agents with headers
+					for (const [, group] of groupMap) {
+						const baseName = group.agents[0].name.replace(/-(p?\d+)$/, "");
+						const label = group.type === "fan_out"
+							? `${group.type}: ${group.agents.length}× ${baseName}`
+							: `parallel: ${group.agents.length} agents`;
+						lines.push(theme.fg("dim", `  ── ${label} ──`));
+
+						for (const agent of group.agents) {
+							const icon = AGENT_STATUS_ICON[agent.status as keyof typeof AGENT_STATUS_ICON] || "◻";
+							const statusColor = agent.status === "running" ? "accent"
+								: agent.status === "done" ? "success" : "error";
+							const elapsed = Math.round(agent.elapsed / 1000);
+							const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
+
+							// Better display name: scout[0] instead of scout-0
+							const displayName = agent.name.replace(/-(p?)(\d+)$/, (_, p, n) => `[${p}${n}]`);
+
+							// Shorter task preview — first sentence or 60 chars max
+							const firstSentence = agent.task.split(/\.\s/)[0];
+							const maxTaskLen = Math.min(60, Math.max(20, width - 30));
+							const taskPreview = firstSentence.length > maxTaskLen
+								? firstSentence.slice(0, maxTaskLen - 3) + "..."
+								: firstSentence;
+
+							lines.push(
+								theme.fg(statusColor, `  ${icon} ${displayName}`) +
+								theme.fg("dim", ` ${elapsed}s${costStr}`) +
+								theme.fg("muted", `  ${taskPreview}`),
+							);
+						}
+					}
+
+					// Render ungrouped agents normally
+					for (const agent of ungrouped) {
 						const icon = AGENT_STATUS_ICON[agent.status as keyof typeof AGENT_STATUS_ICON] || "◻";
 						const statusColor = agent.status === "running" ? "accent"
 							: agent.status === "done" ? "success" : "error";
 						const elapsed = Math.round(agent.elapsed / 1000);
 						const costStr = agent.cost > 0 ? ` $${agent.cost.toFixed(3)}` : "";
 
-						// Task preview — truncate to fit
-						const maxTaskLen = Math.max(20, width - 30);
-						const taskPreview = agent.task.length > maxTaskLen
-							? agent.task.slice(0, maxTaskLen - 3) + "..."
-							: agent.task;
+						// Shorter task preview — first sentence or 60 chars max
+						const firstSentence = agent.task.split(/\.\s/)[0];
+						const maxTaskLen = Math.min(60, Math.max(20, width - 30));
+						const taskPreview = firstSentence.length > maxTaskLen
+							? firstSentence.slice(0, maxTaskLen - 3) + "..."
+							: firstSentence;
 
 						lines.push(
 							theme.fg(statusColor, `  ${icon} ${agent.name}`) +
@@ -1516,7 +1786,10 @@ function setupBeforeAgentStart(pi: ExtensionAPI, _config: ShellConfig): void {
 		if (cachedPrompt) return { systemPrompt: cachedPrompt };
 
 		const cwd = process.cwd();
-		const agentsDir = path.join(cwd, ".pi", "agents");
+		// Look for agent defs in cwd first, then fall back to pi-orchestrator root
+		const cwdAgentsDir = path.join(cwd, ".pi", "agents");
+		const fallbackAgentsDir = path.join(PI_SHELL_ROOT, ".pi", "agents");
+		const agentsDir = existsSync(path.join(cwdAgentsDir, "orchestrator.md")) ? cwdAgentsDir : fallbackAgentsDir;
 		const orchestratorPath = path.join(agentsDir, "orchestrator.md");
 
 		// Parse orchestrator.md — extract body from YAML frontmatter
@@ -1675,6 +1948,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerTillDone(pi, taskStore);
 	registerDispatch(pi, config, taskStore, agentTracker, shellState);
 	registerFanOut(pi, config, taskStore, agentTracker, shellState);
+	registerParallelDispatch(pi, config, taskStore, agentTracker, shellState);
 	registerAnswer(pi, config, taskStore, agentTracker, shellState);
 	registerGitStatus(pi);
 	registerSwitchKeyCommand(pi, config, shellState);
