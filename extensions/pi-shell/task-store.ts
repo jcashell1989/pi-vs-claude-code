@@ -102,7 +102,13 @@ export function createTaskStore(cwd?: string): TaskStore {
 			if (fs.existsSync(filePath)) {
 				const raw = fs.readFileSync(filePath, "utf-8");
 				const parsed = JSON.parse(raw);
-				if (isValidData(parsed)) return parsed;
+				if (isValidData(parsed)) {
+					// Coerce null costs to 0 (can happen with older data)
+					for (const t of parsed.tasks) {
+						if (t.cost == null) t.cost = 0;
+					}
+					return parsed;
+				}
 			}
 		} catch {
 			// Corrupt or missing — fall through to fresh state

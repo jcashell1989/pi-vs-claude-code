@@ -970,12 +970,12 @@ function registerStatusCommand(pi: ExtensionAPI, _taskStore: TaskStore): void {
 			for (const t of tasks) {
 				let line = `${icons[t.status]} #${t.id} ${t.text}`;
 				if (t.branch) line += ` [${t.branch}]`;
-				if (t.cost > 0) line += ` $${t.cost.toFixed(3)}`;
+				if (t.cost && t.cost > 0) line += ` $${t.cost.toFixed(3)}`;
 				lines.push(line);
 			}
 			const done = tasks.filter((t) => t.status === "done").length;
 			const total = tasks.length;
-			const totalCost = tasks.reduce((s, t) => s + t.cost, 0);
+			const totalCost = tasks.reduce((s, t) => s + (t.cost || 0), 0);
 			lines.push("", `${done}/${total} done, $${totalCost.toFixed(3)} total cost`);
 			_ctx.ui.notify(lines.join("\n"), "info");
 		},
