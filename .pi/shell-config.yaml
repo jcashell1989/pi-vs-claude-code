@@ -9,7 +9,7 @@ agent_models:
   builder: openrouter/anthropic/claude-sonnet-4
   reviewer: openrouter/anthropic/claude-sonnet-4
   red-team: openrouter/anthropic/claude-sonnet-4
-  answer: openrouter/google/gemini-2.5-flash
+  answer: openrouter/anthropic/claude-haiku-4.5
 
 agent_timeouts:
   scout: 300
@@ -20,7 +20,7 @@ agent_timeouts:
 
 api_keys:
   work:
-    env: OPENROUTER_WORK_KEY
+    env: OPENROUTER_API_KEY
   personal:
     env: OPENROUTER_PERSONAL_KEY
   default: work

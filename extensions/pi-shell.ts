@@ -1,10 +1,28 @@
 /**
- * Pi-Shell — Agent-forward personal command prompt
+ * Pi-Shell — Agent Orchestration Extension
  *
- * Transforms pi into a strict orchestrator that never touches the codebase
- * directly. All real work is dispatched to specialist subagents. Shell
- * commands pass through via pi's built-in `!`/`!!`. Every interaction is
- * tracked via TillDone with no exceptions.
+ * Transforms Pi into an orchestrator agent that dispatches work to specialist subagents
+ * rather than directly manipulating code. Acts as a personal command prompt with
+ * task-driven workflow management and comprehensive agent lifecycle tracking.
+ *
+ * Core Behavior:
+ * • Never directly manipulates code — all work is delegated to subagents
+ * • Operates as a strict orchestrator with task-first workflow
+ * • Shell commands pass through via Pi's built-in `!`/`!!` syntax
+ * • Every interaction is tracked via TillDone task management (no exceptions)
+ *
+ * Key Features:
+ * • TillDone task management: persistent task lists with idle→inprogress→done lifecycle
+ * • Dispatch Agent tool: spawn specialist subagents (scout, builder, reviewer, etc.)
+ * • Quick Answer tool: self-contained Q&A via read-only subagents
+ * • Git tools: lightweight repository state checks and branch management
+ * • Agent lifecycle management: real-time tracking of spawned subagent status
+ * • Dashboard UI: live agent cards showing progress, cost, and current work
+ *
+ * State Management:
+ * • Persistent TaskStore: tracks tasks, costs, branches, and completion status
+ * • In-memory AgentTracker: monitors spawned subagent processes and lifecycle
+ * • Session continuity: state survives compaction and session restarts
  *
  * Usage: pi -e extensions/pi-shell.ts
  */
@@ -18,6 +36,8 @@ import { applyExtensionDefaults } from "./themeMap.ts";
 import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
 import { spawnSubagent } from "./pi-shell/spawn.ts";
+import { readFileSync, readdirSync } from "fs";
+import { parse as yamlParse } from "yaml";
 
 // ── Type Definitions ───────────────────────────────────────────────────
 
@@ -726,12 +746,69 @@ function setupSessionStart(
 
 /** Set up before_agent_start: inject system prompt with dynamic agent catalog */
 function setupBeforeAgentStart(pi: ExtensionAPI, _config: ShellConfig): void {
-	// Will implement: dynamically assemble orchestrator system prompt with
-	// current agent catalog injected from .pi/agents/*.md definitions
+	let cachedPrompt: string | null = null;
 
 	pi.on("before_agent_start", async (_event, _ctx) => {
-		// Stub: will return { systemPrompt: "..." } with agent catalog
-		return {};
+		if (cachedPrompt) return { systemPrompt: cachedPrompt };
+
+		const cwd = process.cwd();
+		const agentsDir = path.join(cwd, ".pi", "agents");
+		const orchestratorPath = path.join(agentsDir, "orchestrator.md");
+
+		// Parse orchestrator.md — extract body from YAML frontmatter
+		let orchestratorBody: string;
+		try {
+			const raw = readFileSync(orchestratorPath, "utf-8");
+			const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+			if (match) {
+				orchestratorBody = match[2].trim();
+			} else {
+				orchestratorBody = raw.trim();
+			}
+		} catch {
+			// Fallback if orchestrator.md is missing
+			cachedPrompt =
+				"You are Pi-Shell, a strict orchestrator agent. " +
+				"You coordinate work by dispatching specialist subagents via the dispatch_agent tool. " +
+				"You NEVER touch the codebase directly. " +
+				"Always use tilldone to track tasks before dispatching work.";
+			return { systemPrompt: cachedPrompt };
+		}
+
+		// Build agent catalog from all .pi/agents/*.md except orchestrator.md
+		const catalogLines: string[] = [];
+		try {
+			const files = readdirSync(agentsDir).filter(
+				(f) => f.endsWith(".md") && f !== "orchestrator.md"
+			);
+			files.sort();
+
+			for (const file of files) {
+				try {
+					const raw = readFileSync(path.join(agentsDir, file), "utf-8");
+					const match = raw.match(/^---\n([\s\S]*?)\n---/);
+					if (!match) continue;
+
+					const frontmatter = yamlParse(match[1]) as Record<string, string>;
+					if (!frontmatter?.name) continue;
+
+					const name = frontmatter.name;
+					const description = frontmatter.description || "";
+					catalogLines.push(`- **${name}** — ${description}`);
+				} catch {
+					// Skip files that can't be parsed
+				}
+			}
+		} catch {
+			// agentsDir unreadable — catalog stays empty
+		}
+
+		const catalog = catalogLines.length > 0
+			? catalogLines.join("\n")
+			: "(No specialist agents found)";
+
+		cachedPrompt = orchestratorBody.replace("{{AGENT_CATALOG}}", catalog);
+		return { systemPrompt: cachedPrompt };
 	});
 }
 

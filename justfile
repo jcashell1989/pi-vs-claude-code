@@ -67,7 +67,7 @@ ext-pi-pi:
 
 # Pi-Shell: agent-forward orchestrator shell
 ext-pi-shell:
-    pi -e extensions/pi-shell.ts
+    pi -ne -ns -np --no-themes -e extensions/pi-shell.ts
 
 #ext
 

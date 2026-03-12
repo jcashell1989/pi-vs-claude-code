@@ -218,8 +218,12 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 						}
 					}
 				} else if (event.type === "message_end") {
-					// Extract cost from message_end events
 					const msg = event.message;
+					// Surface error messages so they're not swallowed
+					if (msg?.stopReason === "error" && msg?.errorMessage) {
+						textChunks.push(`[Error] ${msg.errorMessage}`);
+					}
+					// Extract cost from message_end events
 					if (msg?.usage?.cost != null) {
 						totalCost += msg.usage.cost;
 						if (onCostUpdate) {
