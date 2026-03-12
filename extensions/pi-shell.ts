@@ -33,6 +33,7 @@ import { Container, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
+import * as os from "os";
 import { applyExtensionDefaults } from "./themeMap.ts";
 import { loadConfig as loadShellConfig, type ShellConfig } from "./pi-shell/config.ts";
 import { createTaskStore as createPersistentTaskStore, type TaskStore, type Task, type TaskStatus } from "./pi-shell/task-store.ts";
@@ -746,48 +747,74 @@ function registerGitStatus(pi: ExtensionAPI): void {
 	});
 }
 
-/** Register the switch_key tool for OpenRouter API key profile switching */
-function registerSwitchKey(pi: ExtensionAPI, _config: ShellConfig, _shellState: { activeProfile: string }): void {
+/** Register the /switch-key command for OpenRouter API key profile switching.
+ *  Key flows: op read → auth.json via shell pipeline. Never touches JS memory. */
+function registerSwitchKeyCommand(
+	pi: ExtensionAPI,
+	_config: ShellConfig,
+	_shellState: { activeProfile: string },
+): void {
+	const { execSync } = require("child_process") as typeof import("child_process");
+	const authJsonPath = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
-	pi.registerTool({
-		name: "switch_key",
-		label: "Switch API Key",
-		description: "Switch the active OpenRouter API key profile.",
-		parameters: Type.Object({
-			profile: Type.String({ description: "API key profile name from shell-config.yaml" }),
-		}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			const { profile } = _params as { profile: string };
+	pi.registerCommand("switch-key", {
+		description: "Switch OpenRouter API key profile (usage: /switch-key <profile>)",
+		handler: async (_args, _ctx) => {
+			const profile = _args?.trim();
+			if (!profile) {
+				const available = Object.keys(_config.api_keys).filter((k) => k !== "default");
+				_ctx.ui.notify(`Usage: /switch-key <profile>\nAvailable: ${available.join(", ")}`, "info");
+				return;
+			}
+
 			const profileConfig = (_config.api_keys as Record<string, any>)[profile];
 			if (!profileConfig || typeof profileConfig === "string") {
 				const available = Object.keys(_config.api_keys).filter((k) => k !== "default");
-				return {
-					content: [{ type: "text" as const, text: `Unknown profile '${profile}'. Available: ${available.join(", ")}` }],
-				};
+				_ctx.ui.notify(`Unknown profile '${profile}'. Available: ${available.join(", ")}`, "error");
+				return;
 			}
-			const envVarName = profileConfig.env as string;
-			const value = process.env[envVarName];
-			if (!value) {
-				return {
-					content: [{ type: "text" as const, text: `Env var '${envVarName}' for profile '${profile}' is not set.` }],
-				};
+
+			const opRef = profileConfig.op as string;
+			if (!opRef) {
+				_ctx.ui.notify(`Profile '${profile}' has no 'op' reference configured.`, "error");
+				return;
 			}
-			process.env.OPENROUTER_API_KEY = value;
+
+			// Step 1: Check op is available
+			try {
+				execSync("command -v op", { stdio: "ignore" });
+			} catch {
+				_ctx.ui.notify("1Password CLI (op) not found. Install it first.", "error");
+				return;
+			}
+
+			// Step 2: Pipe key from op directly into auth.json — key never enters JS
+			try {
+				const shellCmd = `op read "${opRef}" | python3 -c "import sys,json; k=sys.stdin.read().strip(); print(json.dumps({'openrouter':{'type':'api_key','key':k}}, indent=2))" > "${authJsonPath}"`;
+				execSync(shellCmd, { stdio: "pipe", timeout: 15000 });
+			} catch (e: any) {
+				_ctx.ui.notify(`Failed to fetch key from 1Password:\n${e.message || e}`, "error");
+				return;
+			}
+
+			// Step 3: Verify auth.json was written and test the key
+			try {
+				const testCmd = `KEY=$(python3 -c "import json; print(json.load(open('${authJsonPath}'))['openrouter']['key'])") && curl -sf -o /dev/null -w "%{http_code}" "https://openrouter.ai/api/v1/auth/key" -H "Authorization: Bearer $KEY"`;
+				const httpCode = execSync(testCmd, { stdio: "pipe", timeout: 10000 }).toString().trim();
+				if (httpCode !== "200") {
+					_ctx.ui.notify(`Key verification failed (HTTP ${httpCode}). auth.json may be invalid.`, "error");
+					return;
+				}
+			} catch (e: any) {
+				_ctx.ui.notify(`Key verification failed:\n${e.message || e}`, "error");
+				return;
+			}
+
+			// Step 4: Update footer
 			_shellState.activeProfile = profile;
-			return {
-				content: [{ type: "text" as const, text: `Switched to profile '${profile}' (env: ${envVarName})` }],
-			};
-		},
-		renderCall(args, theme) {
-			return new Text(
-				theme.fg("toolTitle", theme.bold("switch_key ")) +
-				theme.fg("accent", (args as any).profile || "?"),
-				0, 0,
-			);
-		},
-		renderResult(result, _options, _theme) {
-			const text = result.content[0];
-			return new Text(text?.type === "text" ? text.text : "", 0, 0);
+
+			// Step 5: Confirm
+			_ctx.ui.notify(`Switched to profile '${profile}'\nauth.json updated, key verified.`, "info");
 		},
 	});
 }
@@ -1633,7 +1660,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerFanOut(pi, config, taskStore, agentTracker);
 	registerAnswer(pi, config, taskStore, agentTracker);
 	registerGitStatus(pi);
-	registerSwitchKey(pi, config, shellState);
+	registerSwitchKeyCommand(pi, config, shellState);
 	registerKillAgent(pi, agentTracker);
 
 	// --- UI ---

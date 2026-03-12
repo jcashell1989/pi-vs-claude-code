@@ -36,9 +36,9 @@ agent_timeouts:
 
 api_keys:
   work:
-    env: OPENROUTER_API_KEY
+    op: "op://Personal/murmur openrouter key/credential"
   personal:
-    env: OPENROUTER_PERSONAL_KEY
+    op: "op://Personal/murmur openrouter key/credential"
   default: work
 
 interactive_commands:

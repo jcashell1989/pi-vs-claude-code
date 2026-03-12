@@ -40,9 +40,8 @@ export const AGENT_FOOTER_ICON = {
 /** Tools that bypass TillDone gate (always allowed even without active task) */
 export const TILLDONE_TOOLS = [
 	"tilldone",
-	"answer", 
+	"answer",
 	"git_status",
-	"switch_key",
 	"kill_agent"
 ] as const;
 
@@ -53,6 +52,5 @@ export const ORCHESTRATOR_TOOLS = [
 	"fan_out",
 	"answer",
 	"git_status",
-	"switch_key",
 	"kill_agent"
 ] as const;

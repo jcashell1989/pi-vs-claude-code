@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
-# Pi-Shell launcher — reads orchestrator model from config and passes to pi
+# Pi-Shell launcher — reads config, injects API key from 1Password, starts pi
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/.pi/shell-config.yaml"
+AUTH_JSON="$HOME/.pi/agent/auth.json"
 
 # Extract orchestrator model from yaml config (simple grep, no deps)
 MODEL=""
 if [ -f "$CONFIG" ]; then
     MODEL=$(grep -A5 '^orchestrator:' "$CONFIG" | grep 'model:' | head -1 | sed 's/.*model: *//' | tr -d '[:space:]')
+fi
+
+# Extract default profile and its op reference, then inject key into auth.json
+if [ -f "$CONFIG" ] && command -v op >/dev/null 2>&1; then
+    DEFAULT_PROFILE=$(grep -A1 '^  default:' "$CONFIG" | head -1 | sed 's/.*default: *//' | tr -d '[:space:]')
+    if [ -n "$DEFAULT_PROFILE" ]; then
+        OP_REF=$(grep -A2 "^  ${DEFAULT_PROFILE}:" "$CONFIG" | grep 'op:' | head -1 | sed 's/^[^:]*: *//' | tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$OP_REF" ]; then
+            mkdir -p "$(dirname "$AUTH_JSON")"
+            # Key goes straight from op into auth.json — never stored in a variable
+            op read "$OP_REF" | python3 -c "
+import sys, json
+k = sys.stdin.read().strip()
+print(json.dumps({'openrouter': {'type': 'api_key', 'key': k}}, indent=2))
+" > "$AUTH_JSON"
+        fi
+    fi
 fi
 
 # Build pi command

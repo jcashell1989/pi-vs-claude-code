@@ -19,7 +19,7 @@ export interface ShellConfig {
   agent_models: Record<string, string>;
   agent_fallbacks: Record<string, string>;
   agent_timeouts: Record<string, number>;
-  api_keys: Record<string, { env: string }> & { default: string };
+  api_keys: Record<string, { op: string }> & { default: string };
   interactive_commands: string[];
   git: {
     auto_branch: boolean;
@@ -67,8 +67,8 @@ const DEFAULT_CONFIG: ShellConfig = {
     answer: 120,
   },
   api_keys: {
-    work: { env: "OPENROUTER_WORK_KEY" },
-    personal: { env: "OPENROUTER_PERSONAL_KEY" },
+    work: { op: "op://Personal/murmur openrouter key/credential" },
+    personal: { op: "op://Personal/murmur openrouter key/credential" },
     default: "work",
   },
   interactive_commands: [
