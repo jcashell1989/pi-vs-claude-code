@@ -740,10 +740,7 @@ function registerGitStatus(pi: ExtensionAPI): void {
 }
 
 /** Register the switch_key tool for OpenRouter API key profile switching */
-function registerSwitchKey(pi: ExtensionAPI, _config: ShellConfig): void {
-	// Will implement: swap OPENROUTER_API_KEY in process.env from named profiles
-	// in shell-config.yaml. Propagates to future subagent spawns.
-	// Bypasses TillDone gate (whitelisted)
+function registerSwitchKey(pi: ExtensionAPI, _config: ShellConfig, _shellState: { activeProfile: string }): void {
 
 	pi.registerTool({
 		name: "switch_key",
@@ -769,6 +766,7 @@ function registerSwitchKey(pi: ExtensionAPI, _config: ShellConfig): void {
 				};
 			}
 			process.env.OPENROUTER_API_KEY = value;
+			_shellState.activeProfile = profile;
 			return {
 				content: [{ type: "text" as const, text: `Switched to profile '${profile}' (env: ${envVarName})` }],
 			};
@@ -1137,7 +1135,7 @@ function registerFooter(
 	_taskStore: TaskStore,
 	_agentTracker: AgentTracker,
 	_config: ShellConfig,
-	_shellState: { ghAvailable: boolean },
+	_shellState: { ghAvailable: boolean; activeProfile: string },
 ): (ctx: ExtensionContext) => void {
 	let cachedBranch = "";
 	let branchLastRefresh = 0;
@@ -1208,12 +1206,9 @@ function registerFooter(
 					? sep + theme.fg("dim", `$${totalCost.toFixed(2)}`)
 					: "";
 
-				// api key profile
-				const profile = typeof _config.api_keys?.default === "string"
-					? _config.api_keys.default
-					: "";
-				const profileStr = profile
-					? sep + theme.fg("muted", profile)
+				// api key profile (live from shellState)
+				const profileStr = _shellState.activeProfile
+					? sep + theme.fg("muted", _shellState.activeProfile)
 					: "";
 
 				const ghStr = !_shellState.ghAvailable && _config.git.auto_pr
@@ -1611,6 +1606,7 @@ export default function piShell(pi: ExtensionAPI) {
 	const agentTracker = createAgentTracker();
 	const shellState = {
 		ghAvailable: false,
+		activeProfile: (typeof config.api_keys?.default === "string" ? config.api_keys.default : "work"),
 	};
 
 	// --- Tools ---
@@ -1619,7 +1615,7 @@ export default function piShell(pi: ExtensionAPI) {
 	registerFanOut(pi, config, taskStore, agentTracker);
 	registerAnswer(pi, config, taskStore, agentTracker);
 	registerGitStatus(pi);
-	registerSwitchKey(pi, config);
+	registerSwitchKey(pi, config, shellState);
 	registerKillAgent(pi, agentTracker);
 
 	// --- UI ---
