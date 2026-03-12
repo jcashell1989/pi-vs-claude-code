@@ -143,17 +143,16 @@ export async function spawnSubagent(options: SpawnOptions): Promise<SpawnResult>
 	const args: string[] = [
 		"--mode", "json",
 		"--no-session",
-		"--system-prompt", task,
+		"--system-prompt", agentDef.systemPrompt,
 		"--tools", agentDef.tools,
 		"--thinking", "off",
-		"--append-system-prompt", agentDef.systemPrompt,
 	];
 
 	if (model) {
 		args.push("--model", model);
 	}
 
-	// The task prompt is the initial message
+	// The task prompt is the initial user message (positional arg)
 	args.push(task);
 
 	const startTime = Date.now();

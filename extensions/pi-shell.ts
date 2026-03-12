@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { Text } from "@mariozechner/pi-tui";
 import { StringEnum } from "@mariozechner/pi-ai";
 import * as path from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
